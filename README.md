@@ -22,15 +22,12 @@ git clone https://github.com/tsaitang404/seraph-memory ~/.hermes/plugins/seraph
 # 2. 启用（替换 holographic）
 hermes memory setup   # 选择 seraph
 
-# 3. 配置 LLM 提取
+# 3. 启用 LLM 提取
 # 在 ~/.hermes/config.yaml:
 plugins:
   seraph:
     db_path: $HERMES_HOME/memory_store.db
     llm_extract: true
-    llm_base_url: https://api.deepseek.com/v1
-    llm_model: deepseek-chat
-# API key 存 .env: SERAPH_LLM_API_KEY=xxx
 ```
 
 ## 配置项
@@ -42,9 +39,9 @@ plugins:
 | `default_trust` | `0.5` | 新事实默认信任分 |
 | `hrr_dim` | `1024` | HRR 向量维度 |
 | `llm_extract` | `false` | 启用 LLM 实体提取 |
-| `llm_base_url` | `https://api.deepseek.com/v1` | OpenAI 兼容 API |
-| `llm_model` | `deepseek-chat` | 提取模型 |
-| `llm_api_key` | - | API key（写 .env） |
+
+**LLM 提取复用 Hermes 模型配置**（`model.default` + `model.provider` + provider API key），
+无需额外配置。opencode-go 等 aggregator 自动回退到 deepseek。
 
 ## 与 Holographic 的差异
 
