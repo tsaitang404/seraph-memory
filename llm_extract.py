@@ -31,6 +31,29 @@ _SYSTEM_PROMPT = (
     "No explanation, no markdown."
 )
 
+_RELATION_PROMPT = (
+    "You extract relationships between named entities from a fact statement. "
+    "A relationship is a triplet: (source_entity, relation, target_entity) where "
+    "the relation is a short semantic verb like runs_on, resolves_to, proxies_to, "
+    "deployed_on, stores_in, depends_on, connects_to, part_of, uses, hosts, etc. "
+    "Only include relations explicitly implied by the statement. "
+    "Include lowercase, Chinese, and domain names as entities. "
+    "EXCLUDE pure numbers and generic words. "
+    "Return ONLY a JSON array of triplets, e.g. "
+    "[[\"tm.aketer.me\", \"resolves_to\", \"sad\"], [\"sad\", \"hosts\", \"trilium\"]]. "
+    "No explanation, no markdown."
+)
+
+_DESCRIPTION_PROMPT = (
+    "You write a concise structured description for ONE entity based on the "
+    "facts and relations associated with it. "
+    "Output plain text (no markdown, no JSON), 3-8 lines, covering: "
+    "what it is (type/role), key attributes (IP, user, system, ports, URLs), "
+    "and its important connections. "
+    "Use the entity's own language (Chinese if the facts are Chinese). "
+    "Only state what the facts support — do not invent details."
+)
+
 
 def _resolve_endpoint() -> tuple[str, str, str]:
     """Resolve (base_url, api_key, model) for the configured provider via Hermes.
@@ -102,37 +125,7 @@ def extract_entities_llm(text: str) -> list[str]:
 
     Returns [] on any failure (caller falls back to regex results).
     """
-    base_url, api_key, model = _resolve_endpoint()
-    if not base_url or not api_key or not model:
-        return []
-
-    url = base_url.rstrip("/") + "/chat/completions"
-    payload = {
-        "model": model,
-        "messages": [
-            {"role": "system", "content": _SYSTEM_PROMPT},
-            {"role": "user", "content": f"Extract entities from: {text}"},
-        ],
-        "temperature": 0.1,
-        "max_tokens": 300,
-    }
-    req = urllib.request.Request(
-        url,
-        data=json.dumps(payload).encode(),
-        headers={
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {api_key}",
-        },
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            data = json.loads(resp.read().decode())
-        raw = data["choices"][0]["message"]["content"]
-    except Exception as e:
-        logger.debug("Seraph LLM extraction failed: %s", e)
-        return []
-
+    raw = _chat(text, _SYSTEM_PROMPT)
     if not raw:
         return []
     raw = raw.strip()
@@ -152,3 +145,92 @@ def extract_entities_llm(text: str) -> list[str]:
     except Exception as e:
         logger.debug("Seraph LLM JSON parse failed: %s", e)
     return []
+
+
+def extract_relations_llm(text: str) -> list[tuple[str, str, str]]:
+    """Extract (source, relation, target) triplets via the configured LLM.
+
+    Returns [] on any failure.
+    """
+    raw = _chat(text, _RELATION_PROMPT)
+    if not raw:
+        return []
+    raw = raw.strip()
+    m = re.search(r"\[.*\]", raw, re.DOTALL)
+    if not m:
+        return []
+    try:
+        data = json.loads(m.group(0))
+        if isinstance(data, list):
+            out: list[tuple[str, str, str]] = []
+            for item in data:
+                if (
+                    isinstance(item, list)
+                    and len(item) == 3
+                    and all(isinstance(x, str) for x in item)
+                ):
+                    s, r, t = (x.strip() for x in item)
+                    if s and r and t and (s, r, t) not in out:
+                        out.append((s, r, t))
+            return out
+    except Exception as e:
+        logger.debug("Seraph LLM relation JSON parse failed: %s", e)
+    return []
+
+
+def generate_entity_description(entity: str, facts: list[str], relations: list[tuple[str, str, str]]) -> str:
+    """Generate a concise description for an entity from its facts + relations.
+
+    Returns "" on any failure (caller keeps existing description).
+    """
+    if not facts:
+        return ""
+    facts_text = "\n".join(f"- {f[:150]}" for f in facts[:12])
+    rel_text = "\n".join(f"- {s} {r} {t}" for s, r, t in relations[:12])
+    prompt = (
+        f"Entity: {entity}\n\nAssociated facts:\n{facts_text}\n"
+        + (f"\nRelations:\n{rel_text}" if rel_text else "")
+    )
+    raw = _chat(prompt, _DESCRIPTION_PROMPT)
+    if not raw:
+        return ""
+    desc = raw.strip()
+    # Strip markdown code fences if present
+    if desc.startswith("```"):
+        desc = desc.split("```", 2)[1] if "```" in desc[3:] else desc
+        desc = desc.strip()
+    return desc[:800]
+
+
+def _chat(text: str, system_prompt: str) -> str:
+    """Send a chat completion to the configured Hermes model, return raw text."""
+    base_url, api_key, model = _resolve_endpoint()
+    if not base_url or not api_key or not model:
+        return ""
+
+    url = base_url.rstrip("/") + "/chat/completions"
+    payload = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": f"Extract from: {text}"},
+        ],
+        "temperature": 0.1,
+        "max_tokens": 300,
+    }
+    req = urllib.request.Request(
+        url,
+        data=json.dumps(payload).encode(),
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {api_key}",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            data = json.loads(resp.read().decode())
+        return data["choices"][0]["message"]["content"]
+    except Exception as e:
+        logger.debug("Seraph LLM call failed: %s", e)
+        return ""

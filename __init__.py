@@ -271,15 +271,18 @@ class SeraphMemoryProvider(MemoryProvider):
     # -- Tool handlers -------------------------------------------------------
 
     def _llm_extract_and_link(self, fact_id: int, content: str) -> None:
-        """Use Hermes' configured LLM to extract entities and link them.
+        """Use Hermes' configured LLM to extract entities + relations and link them.
 
         Falls back silently on any failure (regex results already applied).
         """
         try:
-            from .llm_extract import extract_entities_llm
+            from .llm_extract import extract_entities_llm, extract_relations_llm
             entities = extract_entities_llm(content)
             if entities and self._store:
                 self._store._link_entities(fact_id, entities)
+            relations = extract_relations_llm(content)
+            if relations and self._store:
+                self._store.add_relations(relations, fact_id=fact_id)
         except Exception as e:
             logger.debug("Seraph LLM extract-and-link failed: %s", e)
 
@@ -296,7 +299,7 @@ class SeraphMemoryProvider(MemoryProvider):
                     tags=args.get("tags", ""),
                     title=args.get("title", ""),
                 )
-                # Seraph: LLM entity extraction (optional, config-gated)
+                # Seraph: LLM entity + relation extraction (optional, config-gated)
                 if is_truthy_value(self._config.get("llm_extract", False)):
                     self._llm_extract_and_link(fact_id, args["content"])
                 return json.dumps({"fact_id": fact_id, "status": "added"})

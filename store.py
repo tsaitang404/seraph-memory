@@ -33,6 +33,7 @@ CREATE TABLE IF NOT EXISTS entities (
     name        TEXT NOT NULL,
     entity_type TEXT DEFAULT 'unknown',
     aliases     TEXT DEFAULT '',
+    description TEXT DEFAULT '',
     created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -73,6 +74,18 @@ CREATE TABLE IF NOT EXISTS memory_banks (
     dim        INTEGER NOT NULL,
     fact_count INTEGER DEFAULT 0,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS entity_relations (
+    relation_id    INTEGER PRIMARY KEY AUTOINCREMENT,
+    source_entity  INTEGER REFERENCES entities(entity_id),
+    relation       TEXT NOT NULL,
+    target_entity  INTEGER REFERENCES entities(entity_id),
+    source_label   TEXT DEFAULT '',
+    target_label   TEXT DEFAULT '',
+    fact_id        INTEGER DEFAULT 0,
+    created_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (source_entity, relation, target_entity, fact_id)
 );
 """
 
@@ -183,6 +196,10 @@ class MemoryStore:
         # Migrate: add title column if missing (Seraph: Trilium title/content split)
         if "title" not in columns:
             self._conn.execute("ALTER TABLE facts ADD COLUMN title TEXT DEFAULT ''")
+        # Migrate: add description column to entities if missing
+        ecols = {row[1] for row in self._conn.execute("PRAGMA table_info(entities)").fetchall()}
+        if "description" not in ecols:
+            self._conn.execute("ALTER TABLE entities ADD COLUMN description TEXT DEFAULT ''")
         self._conn.commit()
 
     # ------------------------------------------------------------------
@@ -525,6 +542,61 @@ class MemoryStore:
         for name in entities:
             entity_id = self._resolve_entity(name)
             self._link_fact_entity(fact_id, entity_id)
+
+    def add_relations(self, triplets: list[tuple[str, str, str]], fact_id: int = 0) -> int:
+        """Store (source, relation, target) triplets, resolving entity ids.
+
+        Returns the number of relations stored.
+        """
+        added = 0
+        with self._lock:
+            for source, relation, target in triplets:
+                src_id = self._resolve_entity(source)
+                tgt_id = self._resolve_entity(target)
+                cur = self._conn.execute(
+                    """
+                    INSERT OR IGNORE INTO entity_relations
+                        (source_entity, relation, target_entity, source_label, target_label, fact_id)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (src_id, relation, tgt_id, source, target, fact_id),
+                )
+                if cur.rowcount:
+                    added += 1
+            self._conn.commit()
+        return added
+
+    def update_entity_description(self, entity_id: int, description: str) -> None:
+        """Store an LLM-generated description for an entity (idempotent)."""
+        with self._lock:
+            self._conn.execute(
+                "UPDATE entities SET description=? WHERE entity_id=?",
+                (description, entity_id),
+            )
+            self._conn.commit()
+
+    def get_entity_facts(self, entity_id: int) -> list[str]:
+        """Return all fact contents linked to an entity."""
+        rows = self._conn.execute(
+            """
+            SELECT f.content FROM facts f
+            JOIN fact_entities fe ON f.fact_id = fe.fact_id
+            WHERE fe.entity_id = ?
+            """,
+            (entity_id,),
+        ).fetchall()
+        return [r[0] for r in rows]
+
+    def get_entity_relations(self, entity_id: int) -> list[tuple[str, str, str]]:
+        """Return (source_label, relation, target_label) for an entity (as source or target)."""
+        rows = self._conn.execute(
+            """
+            SELECT source_label, relation, target_label FROM entity_relations
+            WHERE source_entity = ? OR target_entity = ?
+            """,
+            (entity_id, entity_id),
+        ).fetchall()
+        return [(r[0], r[1], r[2]) for r in rows]
 
     def _resolve_entity(self, name: str) -> int:
         """Find an existing entity by name or alias (case-insensitive) or create one.
