@@ -151,10 +151,7 @@ class SeraphMemoryProvider(MemoryProvider):
             {"key": "auto_extract", "description": "Auto-extract facts at session end", "default": "false", "choices": ["true", "false"]},
             {"key": "default_trust", "description": "Default trust score for new facts", "default": "0.5"},
             {"key": "hrr_dim", "description": "HRR vector dimensions", "default": "1024"},
-            {"key": "llm_extract", "description": "Enable LLM entity extraction (Chinese/lowercase/domain)", "default": "false", "choices": ["true", "false"]},
-            {"key": "llm_base_url", "description": "OpenAI-compatible API base URL for extraction LLM", "default": "https://api.deepseek.com/v1"},
-            {"key": "llm_model", "description": "Model for entity extraction", "default": "deepseek-chat"},
-            {"key": "llm_api_key", "description": "API key for extraction LLM", "secret": True, "env_var": "SERAPH_LLM_API_KEY"},
+            {"key": "llm_extract", "description": "Enable LLM entity extraction (reuses Hermes model config)", "default": "false", "choices": ["true", "false"]},
         ]
 
     def initialize(self, session_id: str, **kwargs) -> None:
@@ -273,19 +270,13 @@ class SeraphMemoryProvider(MemoryProvider):
     # -- Tool handlers -------------------------------------------------------
 
     def _llm_extract_and_link(self, fact_id: int, content: str) -> None:
-        """Use LLM to extract entities from content and link them to the fact.
+        """Use Hermes' configured LLM to extract entities and link them.
 
         Falls back silently on any failure (regex results already applied).
         """
         try:
             from .llm_extract import extract_entities_llm
-            cfg = self._config
-            api_key = cfg.get("llm_api_key", "") or ""
-            base_url = cfg.get("llm_base_url", "") or ""
-            model = cfg.get("llm_model", "") or ""
-            entities = extract_entities_llm(
-                content, api_key=api_key, base_url=base_url, model=model
-            )
+            entities = extract_entities_llm(content)
             if entities and self._store:
                 self._store._link_entities(fact_id, entities)
         except Exception as e:
