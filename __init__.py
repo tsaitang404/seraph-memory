@@ -101,7 +101,7 @@ def _load_plugin_config() -> dict:
         # overlay + ${VAR} expansion (e.g. an api key template) too.
         from hermes_cli.config import load_config_readonly
         all_config = load_config_readonly()
-        return cfg_get(all_config, "plugins", "hermes-memory-store", default={}) or {}
+        return cfg_get(all_config, "plugins", "seraph", default={}) or {}
     except Exception:
         return {}
 
@@ -110,8 +110,8 @@ def _load_plugin_config() -> dict:
 # MemoryProvider implementation
 # ---------------------------------------------------------------------------
 
-class HolographicMemoryProvider(MemoryProvider):
-    """Holographic memory with structured facts, entity resolution, and HRR retrieval."""
+class SeraphMemoryProvider(MemoryProvider):
+    """Seraph memory — holographic storage + LLM entity extraction."""
 
     def __init__(self, config: dict | None = None):
         self._config = config or _load_plugin_config()
@@ -121,13 +121,13 @@ class HolographicMemoryProvider(MemoryProvider):
 
     @property
     def name(self) -> str:
-        return "holographic"
+        return "seraph"
 
     def is_available(self) -> bool:
         return True  # SQLite is always available, numpy is optional
 
     def save_config(self, values, hermes_home):
-        """Write config to config.yaml under plugins.hermes-memory-store."""
+        """Write config to config.yaml under plugins.seraph."""
         from pathlib import Path
         config_path = Path(hermes_home) / "config.yaml"
         try:
@@ -137,7 +137,7 @@ class HolographicMemoryProvider(MemoryProvider):
             from hermes_cli.config import read_user_config_raw
             existing = read_user_config_raw(config_path)
             existing.setdefault("plugins", {})
-            existing["plugins"]["hermes-memory-store"] = values
+            existing["plugins"]["seraph"] = values
             with open(config_path, "w", encoding="utf-8") as f:
                 yaml.dump(existing, f, default_flow_style=False)
         except Exception:
@@ -151,6 +151,10 @@ class HolographicMemoryProvider(MemoryProvider):
             {"key": "auto_extract", "description": "Auto-extract facts at session end", "default": "false", "choices": ["true", "false"]},
             {"key": "default_trust", "description": "Default trust score for new facts", "default": "0.5"},
             {"key": "hrr_dim", "description": "HRR vector dimensions", "default": "1024"},
+            {"key": "llm_extract", "description": "Enable LLM entity extraction (Chinese/lowercase/domain)", "default": "false", "choices": ["true", "false"]},
+            {"key": "llm_base_url", "description": "OpenAI-compatible API base URL for extraction LLM", "default": "https://api.deepseek.com/v1"},
+            {"key": "llm_model", "description": "Model for entity extraction", "default": "deepseek-chat"},
+            {"key": "llm_api_key", "description": "API key for extraction LLM", "secret": True, "env_var": "SERAPH_LLM_API_KEY"},
         ]
 
     def initialize(self, session_id: str, **kwargs) -> None:
@@ -268,6 +272,25 @@ class HolographicMemoryProvider(MemoryProvider):
 
     # -- Tool handlers -------------------------------------------------------
 
+    def _llm_extract_and_link(self, fact_id: int, content: str) -> None:
+        """Use LLM to extract entities from content and link them to the fact.
+
+        Falls back silently on any failure (regex results already applied).
+        """
+        try:
+            from .llm_extract import extract_entities_llm
+            cfg = self._config
+            api_key = cfg.get("llm_api_key", "") or ""
+            base_url = cfg.get("llm_base_url", "") or ""
+            model = cfg.get("llm_model", "") or ""
+            entities = extract_entities_llm(
+                content, api_key=api_key, base_url=base_url, model=model
+            )
+            if entities and self._store:
+                self._store._link_entities(fact_id, entities)
+        except Exception as e:
+            logger.debug("Seraph LLM extract-and-link failed: %s", e)
+
     def _handle_fact_store(self, args: dict) -> str:
         try:
             action = args["action"]
@@ -280,6 +303,9 @@ class HolographicMemoryProvider(MemoryProvider):
                     category=args.get("category", "general"),
                     tags=args.get("tags", ""),
                 )
+                # Seraph: LLM entity extraction (optional, config-gated)
+                if is_truthy_value(self._config.get("llm_extract", False)):
+                    self._llm_extract_and_link(fact_id, args["content"])
                 return json.dumps({"fact_id": fact_id, "status": "added"})
 
             elif action == "search":
@@ -455,8 +481,7 @@ class HolographicMemoryProvider(MemoryProvider):
 # Plugin entry point
 # ---------------------------------------------------------------------------
 
-def register(ctx) -> None:
-    """Register the holographic memory provider with the plugin system."""
-    config = _load_plugin_config()
-    provider = HolographicMemoryProvider(config=config)
+def register(ctx, config: dict | None = None) -> None:
+    """Register the seraph memory provider with the plugin system."""
+    provider = SeraphMemoryProvider(config=config)
     ctx.register_memory_provider(provider)

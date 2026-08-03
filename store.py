@@ -445,13 +445,14 @@ class MemoryStore:
     # ------------------------------------------------------------------
 
     def _extract_entities(self, text: str) -> list[str]:
-        """Extract entity candidates from text using simple regex rules.
+        """Extract entity candidates from text.
 
         Rules applied (in order):
         1. Capitalized multi-word phrases  e.g. "John Doe"
         2. Double-quoted terms             e.g. "Python"
         3. Single-quoted terms             e.g. 'pytest'
         4. AKA patterns                    e.g. "Guido aka BDFL" -> two entities
+        5. Known entities from the entities table (covers lowercase/Chinese/domain names)
 
         Returns a deduplicated list preserving first-seen order.
         """
@@ -477,7 +478,25 @@ class MemoryStore:
             _add(m.group(1))
             _add(m.group(2))
 
+        # Rule 5: match against known entities (lowercase/Chinese/domain names)
+        try:
+            known = self._conn.execute(
+                "SELECT name FROM entities"
+            ).fetchall()
+            for row in known:
+                ename = row["name"]
+                if ename and len(ename) >= 2 and ename in text:
+                    _add(ename)
+        except Exception:
+            pass
+
         return candidates
+
+    def _link_entities(self, fact_id: int, entities: list[str]) -> None:
+        """Resolve and link a list of entity names to a fact (idempotent)."""
+        for name in entities:
+            entity_id = self._resolve_entity(name)
+            self._link_fact_entity(fact_id, entity_id)
 
     def _resolve_entity(self, name: str) -> int:
         """Find an existing entity by name or alias (case-insensitive) or create one.
