@@ -60,6 +60,7 @@ FACT_STORE_SCHEMA = {
                 "enum": ["add", "search", "probe", "related", "reason", "contradict", "update", "remove", "list"],
             },
             "content": {"type": "string", "description": "Fact content (required for 'add')."},
+            "title": {"type": "string", "description": "Optional short title (used as Trilium note title). Auto-generated if omitted."},
             "query": {"type": "string", "description": "Search query (required for 'search')."},
             "entity": {"type": "string", "description": "Entity name for 'probe'/'related'."},
             "entities": {"type": "array", "items": {"type": "string"}, "description": "Entity names for 'reason'."},
@@ -293,6 +294,7 @@ class SeraphMemoryProvider(MemoryProvider):
                     args["content"],
                     category=args.get("category", "general"),
                     tags=args.get("tags", ""),
+                    title=args.get("title", ""),
                 )
                 # Seraph: LLM entity extraction (optional, config-gated)
                 if is_truthy_value(self._config.get("llm_extract", False)):

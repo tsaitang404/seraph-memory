@@ -17,6 +17,7 @@ _SCHEMA = """
 CREATE TABLE IF NOT EXISTS facts (
     fact_id         INTEGER PRIMARY KEY AUTOINCREMENT,
     content         TEXT NOT NULL UNIQUE,
+    title           TEXT DEFAULT '',
     category        TEXT DEFAULT 'general',
     tags            TEXT DEFAULT '',
     trust_score     REAL DEFAULT 0.5,
@@ -179,6 +180,9 @@ class MemoryStore:
         columns = {row[1] for row in self._conn.execute("PRAGMA table_info(facts)").fetchall()}
         if "hrr_vector" not in columns:
             self._conn.execute("ALTER TABLE facts ADD COLUMN hrr_vector BLOB")
+        # Migrate: add title column if missing (Seraph: Trilium title/content split)
+        if "title" not in columns:
+            self._conn.execute("ALTER TABLE facts ADD COLUMN title TEXT DEFAULT ''")
         self._conn.commit()
 
     # ------------------------------------------------------------------
@@ -190,25 +194,32 @@ class MemoryStore:
         content: str,
         category: str = "general",
         tags: str = "",
+        title: str = "",
     ) -> int:
         """Insert a fact and return its fact_id.
 
         Deduplicates by content (UNIQUE constraint). On duplicate, returns
         the existing fact_id without modifying the row. Extracts entities from
         the content and links them to the fact.
+
+        title: optional short title for the fact (used as Trilium note title).
+        When empty, auto-generates a summary from content (first 40 chars).
         """
         with self._lock:
             content = content.strip()
             if not content:
                 raise ValueError("content must not be empty")
 
+            if not title:
+                title = self._auto_title(content)
+
             try:
                 cur = self._conn.execute(
                     """
-                    INSERT INTO facts (content, category, tags, trust_score)
-                    VALUES (?, ?, ?, ?)
+                    INSERT INTO facts (content, title, category, tags, trust_score)
+                    VALUES (?, ?, ?, ?, ?)
                     """,
-                    (content, category, tags, self.default_trust),
+                    (content, title, category, tags, self.default_trust),
                 )
                 self._conn.commit()
                 fact_id: int = cur.lastrowid  # type: ignore[assignment]
@@ -443,6 +454,23 @@ class MemoryStore:
     # ------------------------------------------------------------------
     # Entity helpers
     # ------------------------------------------------------------------
+
+    def _auto_title(self, content: str, max_len: int = 40) -> str:
+        """Generate a short title from content (strip HTML, first sentence)."""
+        text = content.strip()
+        # Strip HTML tags
+        text = re.sub(r"<[^>]+>", " ", text)
+        text = re.sub(r"\s+", " ", text).strip()
+        # First sentence (。！？.!? or first N chars)
+        for sep in ("。", "！", "？", ". ", "! ", "? "):
+            idx = text.find(sep)
+            if 0 < idx <= max_len:
+                text = text[: idx + (1 if sep in "。！？" else 0)]
+                break
+        text = text.strip()
+        if len(text) > max_len:
+            text = text[:max_len]
+        return text or content[:max_len]
 
     def _extract_entities(self, text: str) -> list[str]:
         """Extract entity candidates from text.
