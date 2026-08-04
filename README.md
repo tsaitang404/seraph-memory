@@ -54,7 +54,22 @@ plugins:
 | 标题 | 无（content 截断）| title 字段（Trilium 友好）|
 | 存储 | SQLite | SQLite（同构，自动迁移）|
 | 检索 | FTS5 + HRR | FTS5 + HRR（同构）|
-| 信任评分 | ✅ | ✅（同构）|
+| 信任评分 | 固定增量（+0.05/-0.10）| **递减制**（见下）|
+
+## 置信度机制
+
+**Seraph 用递减制信任评分**（diminishing returns），区别于 Holographic 的固定增量：
+
+```
+helpful   → trust += 0.05 * (1 - old_trust)    # 越接近 1 加得越少
+unhelpful → trust -= 0.10 * old_trust           # 越接近 1 减得越狠
+```
+
+- **收益递减**：低置信事实快速爬升（0.5 → 0.7），高置信事实需要多次确认才微动
+- **不会饱和到 100%**：数学上逼近 1.0 但达不到——事实永远保留"可被证伪"的空间
+- **证伪惩罚重**：一条"确认过"的高置信事实被推翻，跌幅大，符合直觉
+- **可信度可比较**：trust 0.9 vs 0.6 有实际区分度（固定增量会一堆事实卡在 1.0）
+- 通过 `fact_feedback` 工具（helpful/unhelpful）或 `fact_store update`（trust_delta）调整
 
 ## 跟随上游
 
