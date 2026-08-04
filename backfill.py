@@ -63,9 +63,18 @@ print(f"  ✅ 关系提取 {rel_total} 条")
 
 # 3. 更新实体描述（关系变化后，重新生成有关系的实体描述）
 print("\n更新实体描述（关系变化的实体）...")
-entities = cur.execute("""
-    SELECT DISTINCT entity_id, name FROM entity_relations
-""").fetchall() if "entity_relations" in [r[0] for r in cur.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()] else []
+import sqlite3 as _sq
+try:
+    _er_tables = [r[0] for r in cur.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()]
+    if "entity_relations" in _er_tables:
+        entities = cur.execute("""
+            SELECT DISTINCT er.source_entity, e.name FROM entity_relations er
+            JOIN entities e ON er.source_entity = e.entity_id
+        """).fetchall()
+    else:
+        entities = []
+except Exception:
+    entities = []
 
 from llm_extract import generate_entity_description
 desc_done = 0
