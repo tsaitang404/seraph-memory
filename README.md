@@ -71,6 +71,38 @@ unhelpful → trust -= 0.10 * old_trust           # 越接近 1 减得越狠
 - **可信度可比较**：trust 0.9 vs 0.6 有实际区分度（固定增量会一堆事实卡在 1.0）
 - 通过 `fact_feedback` 工具（helpful/unhelpful）或 `fact_store update`（trust_delta）调整
 
+## 记忆服务（可选组件）
+
+Seraph 除了作为 Hermes 插件，还可以作为**独立 HTTP 服务**运行（`api_server.py`），
+让外部工具（笔记应用、脚本、其他 agent）把内容异步写入记忆引擎：
+
+| 方法 | 路径 | 作用 |
+|---|---|---|
+| POST | `/v1/memories` | 入队：`{note_id, title, content, tags}`，**202 即回** |
+| GET | `/v1/queue/status` | 队列深度 / worker 状态 |
+| GET | `/health` | 探活 |
+
+**异步队列**：`pending_extractions` 表（与 facts 同库，WAL），`note_id UNIQUE` = 天然防抖
+（重复编辑冲突 UPDATE，队列永远只有最新一条）；worker 线程后台消化 → LLM 实体/关系提取 → 写库。
+重启自动恢复中断任务（processing → pending）；LLM 失败指数退避重试（3 次标 failed 留查）。
+`note_map` 表存 note_id → fact_id 映射，同一笔记再编辑 = 更新原 fact（重建实体边）。
+
+**Trilium 集成示例**（`trilium_memory_bridge.js`）：Trilium 事件脚本
+（JS backend code note，mime 必须 `application/javascript;env=backend`），
+`~runOnNoteContentChange`（isInheritable）挂图谱根，子树内笔记内容变化触发：
+- 过滤：跳过 `#syncKey` 镜像节点（防回流循环）、`#memoryIgnore`（手动排除）
+- 范围判定：祖先链含 `#hermesKnowledgeGraph` 标签（属性驱动，不硬编码 noteId）
+- 事件语义：`api.currentNote` = 脚本自身，**被修改的笔记在 `api.originEntity`**
+
+运行（需 Hermes venv：llm_extract 惰性 import hermes_cli 的 provider 配置）：
+
+```bash
+SERAPH_API_TOKEN=<token> /opt/hermes-agent/venv/bin/python3.12 api_server.py
+# 默认监听 127.0.0.1:8787
+```
+
+依赖：fastapi + uvicorn（Hermes venv 安装）。鉴权 Bearer token 由环境变量提供，代码无硬编码密钥。
+
 ## 跟随上游
 
 本仓库 fork 自 `NousResearch/hermes-agent` 的 `plugins/memory/holographic/`。
