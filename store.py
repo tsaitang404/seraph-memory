@@ -537,10 +537,17 @@ class MemoryStore:
 
         return candidates
 
-    def _link_entities(self, fact_id: int, entities: list[str]) -> None:
-        """Resolve and link a list of entity names to a fact (idempotent)."""
-        for name in entities:
-            entity_id = self._resolve_entity(name)
+    def _link_entities(self, fact_id: int, entities: list) -> None:
+        """Resolve and link entities to a fact (idempotent).
+
+        entities: list of str (name) or (name, type) tuples.
+        """
+        for item in entities:
+            if isinstance(item, tuple) and len(item) >= 1:
+                name, etype = item[0], (item[1] if len(item) > 1 else "")
+            else:
+                name, etype = item, ""
+            entity_id = self._resolve_entity(name, etype)
             self._link_fact_entity(fact_id, entity_id)
 
     def add_relations(self, triplets: list[tuple[str, str, str]], fact_id: int = 0) -> int:
@@ -598,8 +605,11 @@ class MemoryStore:
         ).fetchall()
         return [(r[0], r[1], r[2]) for r in rows]
 
-    def _resolve_entity(self, name: str) -> int:
+    def _resolve_entity(self, name: str, entity_type: str = "") -> int:
         """Find an existing entity by name or alias (case-insensitive) or create one.
+
+        entity_type: optional type for newly created entities (e.g. "service").
+        Existing entities are never re-typed (preserves curated types).
 
         Returns the entity_id.
         """
@@ -621,9 +631,10 @@ class MemoryStore:
         if alias_row is not None:
             return int(alias_row["entity_id"])
 
-        # Create new entity
+        # Create new entity (with type if provided)
         cur = self._conn.execute(
-            "INSERT INTO entities (name) VALUES (?)", (name,)
+            "INSERT INTO entities (name, entity_type) VALUES (?, ?)",
+            (name, entity_type or "unknown"),
         )
         self._conn.commit()
         return int(cur.lastrowid)  # type: ignore[return-value]

@@ -34,7 +34,10 @@ _SYSTEM_PROMPT = (
     "bucket names alone (web, lobechat) unless clearly a named resource, "
     "timestamps, numbers, or vague categories. "
     "When a short name is ambiguous, prefer the full form (e.g. 'hermes dashboard' not 'dashboard'). "
-    "Return ONLY a JSON array of strings, e.g. [\"sad\", \"tm.aketer.me\", \"poto\"]. "
+    "Classify each entity with ONE of these types: "
+    "person, server, device, domain, service, project, repo, tool, resource, company, system. "
+    "Return ONLY a JSON array of [name, type] pairs, e.g. "
+    "[[\"sad\", \"server\"], [\"tm.aketer.me\", \"domain\"], [\"poto\", \"project\"]]. "
     "No explanation, no markdown."
 )
 
@@ -131,8 +134,8 @@ def _read_env_file(key: str) -> str:
     return ""
 
 
-def extract_entities_llm(text: str) -> list[str]:
-    """Extract entities via the configured Hermes model.
+def extract_entities_llm(text: str) -> list[tuple[str, str]]:
+    """Extract entities as (name, type) pairs via the configured Hermes model.
 
     Returns [] on any failure (caller falls back to regex results).
     """
@@ -146,12 +149,20 @@ def extract_entities_llm(text: str) -> list[str]:
     try:
         data = json.loads(m.group(0))
         if isinstance(data, list):
-            out: list[str] = []
+            out: list[tuple[str, str]] = []
+            seen: set[str] = set()
             for item in data:
-                if isinstance(item, str):
-                    item = item.strip()
-                    if item and item not in out:
-                        out.append(item)
+                if isinstance(item, list) and len(item) >= 1 and isinstance(item[0], str):
+                    name = item[0].strip()
+                    etype = item[1].strip() if len(item) > 1 and isinstance(item[1], str) else ""
+                    if name and name.lower() not in seen:
+                        seen.add(name.lower())
+                        out.append((name, etype))
+                elif isinstance(item, str):
+                    name = item.strip()
+                    if name and name.lower() not in seen:
+                        seen.add(name.lower())
+                        out.append((name, ""))
             return out
     except Exception as e:
         logger.debug("Seraph LLM JSON parse failed: %s", e)
