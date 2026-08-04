@@ -28,16 +28,16 @@ _SYSTEM_PROMPT = (
     "Include lowercase names, Chinese names, domain names, and compound names. "
     "STRICT EXCLUSIONS — do NOT extract: "
     "DNS record types (A, AAAA, CNAME, MX, TXT, SPF, DKIM, DMARC, NS), "
-    "port numbers or IP addresses (38.76.190.84, 104.21.x, 172.67.x), "
+    "port numbers or IP addresses (192.0.2.1, 198.51.100.x), "
     "generic table/database names (images, configuration, users, data), "
     "single generic words (web, ai, r2, d1, open, astr, tail, pic), "
     "bucket names alone (web, lobechat) unless clearly a named resource, "
     "timestamps, numbers, or vague categories. "
-    "When a short name is ambiguous, prefer the full form (e.g. 'hermes dashboard' not 'dashboard'). "
+    "When a short name is ambiguous, prefer the full form (e.g. 'app dashboard' not 'dashboard'). "
     "Classify each entity with ONE of these types: "
     "person, server, device, domain, service, project, repo, tool, resource, company, system. "
     "Return ONLY a JSON array of [name, type] pairs, e.g. "
-    "[[\"sad\", \"server\"], [\"tm.aketer.me\", \"domain\"], [\"poto\", \"project\"]]. "
+    "[[\"host-a\", \"server\"], [\"app.example.com\", \"domain\"], [\"my-project\", \"project\"]]. "
     "No explanation, no markdown."
 )
 
@@ -54,7 +54,7 @@ _RELATION_PROMPT = (
     "generic table/database names (images, configuration, users), "
     "single generic words (web, ai, r2, d1), timestamps, or numbers. "
     "Return ONLY a JSON array of triplets, e.g. "
-    "[[\"tm.aketer.me\", \"resolves_to\", \"sad\"], [\"sad\", \"hosts\", \"trilium\"]]. "
+    "[[\"app.example.com\", \"resolves_to\", \"host-a\"], [\"host-a\", \"hosts\", \"notes-service\"]]. "
     "No explanation, no markdown."
 )
 
