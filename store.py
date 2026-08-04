@@ -430,8 +430,15 @@ class MemoryStore:
     def record_feedback(self, fact_id: int, helpful: bool) -> dict:
         """Record user feedback and adjust trust asymmetrically.
 
-        helpful=True  -> trust += 0.05, helpful_count += 1
-        helpful=False -> trust -= 0.10
+        Diminishing-returns schedule (trust never saturates at 1.0):
+
+        helpful=True  -> trust += 0.05 * (1 - old_trust), helpful_count += 1
+        helpful=False -> trust -= 0.10 * old_trust
+
+        Low-trust facts climb quickly; high-trust facts need many
+        confirmations to move further; a high-trust fact that is
+        contradicted drops hard. Trust is clamped to [0, 1] and
+        asymptotically approaches 1.0 without reaching it.
 
         Returns a dict with fact_id, old_trust, new_trust, helpful_count.
         Raises KeyError if fact_id does not exist.
@@ -445,7 +452,10 @@ class MemoryStore:
                 raise KeyError(f"fact_id {fact_id} not found")
 
             old_trust: float = row["trust_score"]
-            delta = _HELPFUL_DELTA if helpful else _UNHELPFUL_DELTA
+            if helpful:
+                delta = _HELPFUL_DELTA * (1.0 - old_trust)
+            else:
+                delta = _UNHELPFUL_DELTA * old_trust  # -0.10 * old_trust
             new_trust = _clamp_trust(old_trust + delta)
 
             helpful_increment = 1 if helpful else 0
