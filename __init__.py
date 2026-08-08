@@ -53,6 +53,8 @@ FACT_STORE_SCHEMA = {
         "• related — What connects to an entity? Structural adjacency.\n"
         "• reason — Compositional: facts connected to MULTIPLE entities simultaneously.\n"
         "• contradict — Memory hygiene: find facts making conflicting claims.\n"
+        "• remove_entity — Delete an entity and its links (cascade).\n"
+        "• purge_orphans — Delete entities with no fact/relation links (LLM noise cleanup), optional entity_type filter.\n"
         "• update/remove/list — CRUD operations.\n\n"
         "IMPORTANT: Before answering questions about the user, ALWAYS probe or reason first."
     ),
@@ -61,7 +63,7 @@ FACT_STORE_SCHEMA = {
         "properties": {
             "action": {
                 "type": "string",
-                "enum": ["add", "search", "probe", "related", "reason", "contradict", "update", "remove", "list"],
+                "enum": ["add", "search", "probe", "related", "reason", "contradict", "update", "remove", "remove_entity", "purge_orphans", "list"],
             },
             "content": {"type": "string", "description": "Fact content (required for 'add')."},
             "title": {"type": "string", "description": "Optional short title (used as Trilium note title). Auto-generated if omitted."},
@@ -69,6 +71,8 @@ FACT_STORE_SCHEMA = {
             "entity": {"type": "string", "description": "Entity name for 'probe'/'related'."},
             "entities": {"type": "array", "items": {"type": "string"}, "description": "Entity names for 'reason'."},
             "fact_id": {"type": "integer", "description": "Fact ID for 'update'/'remove'."},
+            "entity_id": {"type": "integer", "description": "Entity ID for 'remove_entity'."},
+            "entity_type": {"type": "string", "description": "Optional type filter for 'purge_orphans' (e.g. 'unknown')."},
             "category": {"type": "string", "enum": ["user_pref", "project", "tool", "general"]},
             "tags": {"type": "string", "description": "Comma-separated tags."},
             "trust_delta": {"type": "number", "description": "Trust adjustment for 'update'."},
@@ -366,6 +370,16 @@ class SeraphMemoryProvider(MemoryProvider):
             elif action == "remove":
                 removed = store.remove_fact(int(args["fact_id"]))
                 return json.dumps({"removed": removed})
+
+            elif action == "remove_entity":
+                removed = store.remove_entity(int(args["entity_id"]))
+                return json.dumps({"removed": removed})
+
+            elif action == "purge_orphans":
+                count = store.purge_orphan_entities(
+                    entity_type=args.get("entity_type") or None
+                )
+                return json.dumps({"purged": count})
 
             elif action == "list":
                 facts = store.list_facts(

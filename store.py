@@ -397,6 +397,65 @@ class MemoryStore:
             self._rebuild_bank(row["category"])
             return True
 
+    def remove_entity(self, entity_id: int) -> bool:
+        """Delete an entity and all its links (fact_entities + entity_relations).
+
+        Returns True if the row existed. Cascade-safe: linking rows are removed
+        first so no orphan references remain.
+        """
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT entity_id FROM entities WHERE entity_id = ?", (entity_id,)
+            ).fetchone()
+            if row is None:
+                return False
+            self._conn.execute(
+                "DELETE FROM fact_entities WHERE entity_id = ?", (entity_id,)
+            )
+            self._conn.execute(
+                "DELETE FROM entity_relations WHERE source_entity = ? OR target_entity = ?",
+                (entity_id, entity_id),
+            )
+            self._conn.execute(
+                "DELETE FROM entities WHERE entity_id = ?", (entity_id,)
+            )
+            self._conn.commit()
+            return True
+
+    def purge_orphan_entities(self, entity_type: str | None = None) -> int:
+        """Delete entities with NO fact_entities and NO entity_relations links.
+
+        Optionally restrict to one entity_type (e.g. 'unknown'). Returns the
+        number of entities deleted. Used for cleaning LLM-extraction noise.
+        """
+        with self._lock:
+            params: list = []
+            type_clause = ""
+            if entity_type:
+                type_clause = " AND e.entity_type = ?"
+                params.append(entity_type)
+            rows = self._conn.execute(
+                f"""
+                SELECT e.entity_id FROM entities e
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM fact_entities fe WHERE fe.entity_id = e.entity_id
+                )
+                AND NOT EXISTS (
+                    SELECT 1 FROM entity_relations er
+                    WHERE er.source_entity = e.entity_id OR er.target_entity = e.entity_id
+                )
+                {type_clause}
+                """,
+                params,
+            ).fetchall()
+            ids = [r["entity_id"] for r in rows]
+            for eid in ids:
+                self._conn.execute(
+                    "DELETE FROM entities WHERE entity_id = ?", (eid,)
+                )
+            self._conn.commit()
+            return len(ids)
+
     def list_facts(
         self,
         category: str | None = None,

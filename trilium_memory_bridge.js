@@ -27,6 +27,13 @@ async function submitNote(note) {
         if (!inGraph) {
             return;
         }
+        // 2.5 配置镜像子树（skills/SOUL/记忆，hermes-trillium-sync 10s 写入）→ 跳过
+        //     hermes-trillium-sync 在「Hermes配置」节点上挂了 #memoryIgnore（isInheritable），
+        //     子节点 hasLabel 继承命中；这里再显式扫祖先链做双保险（防标签挂在非直接父级）。
+        const inConfigMirror = note.getAncestors().some((a) => a.hasLabel('memoryIgnore'));
+        if (inConfigMirror) {
+            return;
+        }
         // 3. 只收文本内容
         let content = '';
         try {
