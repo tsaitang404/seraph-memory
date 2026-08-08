@@ -39,11 +39,15 @@ logger = logging.getLogger(__name__)
 FACT_STORE_SCHEMA = {
     "name": "fact_store",
     "description": (
-        "Deep structured memory with algebraic reasoning. "
+        "Deep structured memory with LLM entity/relation extraction and algebraic reasoning. "
         "Use alongside the memory tool — memory for always-on context, "
         "fact_store for deep recall and compositional queries.\n\n"
+        "LLM EXTRACTION: new facts are processed by an LLM that recognizes Chinese, "
+        "lowercase hostnames, and domain names as entities (with types), extracts "
+        "entity-relation triples (e.g. 'server runs_on host'), and generates entity "
+        "descriptions. This powers the Trilium knowledge-graph mirror.\n\n"
         "ACTIONS (simple → powerful):\n"
-        "• add — Store a fact the user would expect you to remember.\n"
+        "• add — Store a fact the user would expect you to remember (LLM extracts entities/relations).\n"
         "• search — Keyword lookup ('editor config', 'deploy process').\n"
         "• probe — Entity recall: ALL facts about a person/thing.\n"
         "• related — What connects to an entity? Structural adjacency.\n"
@@ -191,15 +195,17 @@ class SeraphMemoryProvider(MemoryProvider):
             total = 0
         if total == 0:
             return (
-                "# Holographic Memory\n"
+                "# Seraph Memory\n"
                 "Active. Empty fact store — proactively add facts the user would expect you to remember.\n"
-                "Use fact_store(action='add') to store durable structured facts about people, projects, preferences, decisions.\n"
+                "Use fact_store(action='add') to store durable structured facts about people, projects, preferences, decisions. "
+                "Facts are processed with LLM entity/relation extraction (Chinese, hostnames, domains recognized).\n"
                 "Use fact_feedback to rate facts after using them (trains trust scores)."
             )
         return (
-            f"# Holographic Memory\n"
-            f"Active. {total} facts stored with entity resolution and trust scoring.\n"
-            f"Use fact_store to search, probe entities, reason across entities, or add facts.\n"
+            f"# Seraph Memory\n"
+            f"Active. {total} facts stored with LLM entity resolution, relation extraction, and trust scoring.\n"
+            f"Use fact_store to search, probe entities, reason across entities, or add facts "
+            f"(new facts get LLM entity/relation extraction — Chinese, lowercase hostnames, domains all recognized).\n"
             f"Use fact_feedback to rate facts after using them (trains trust scores)."
         )
 
@@ -214,13 +220,13 @@ class SeraphMemoryProvider(MemoryProvider):
             for r in results:
                 trust = r.get("trust_score", r.get("trust", 0))
                 lines.append(f"- [{trust:.1f}] {r.get('content', '')}")
-            return "## Holographic Memory\n" + "\n".join(lines)
+            return "## Seraph Memory\n" + "\n".join(lines)
         except Exception as e:
-            logger.debug("Holographic prefetch failed: %s", e)
+            logger.debug("Seraph prefetch failed: %s", e)
             return ""
 
     def sync_turn(self, user_content: str, assistant_content: str, *, session_id: str = "") -> None:
-        # Holographic memory stores explicit facts via tools, not auto-sync.
+        # Seraph memory stores explicit facts via tools, not auto-sync.
         # The on_session_end hook handles auto-extraction if configured.
         pass
 
@@ -251,7 +257,7 @@ class SeraphMemoryProvider(MemoryProvider):
                 category = "user_pref" if target == "user" else "general"
                 self._store.add_fact(content, category=category)
             except Exception as e:
-                logger.debug("Holographic memory_write mirror failed: %s", e)
+                logger.debug("Seraph memory_write mirror failed: %s", e)
 
     def shutdown(self) -> None:
         # Release the shared SQLite connection deterministically on the
@@ -264,7 +270,7 @@ class SeraphMemoryProvider(MemoryProvider):
             try:
                 self._store.close()
             except Exception as e:
-                logger.debug("Holographic shutdown close() failed: %s", e)
+                logger.debug("Seraph shutdown close() failed: %s", e)
         self._store = None
         self._retriever = None
 
