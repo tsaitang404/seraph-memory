@@ -265,3 +265,67 @@ def _chat(text: str, system_prompt: str) -> str:
     except Exception as e:
         logger.debug("Seraph LLM call failed: %s", e)
         return ""
+
+
+_CLASSIFY_PROMPT = (
+    "You classify entities by their semantic role in a knowledge graph. "
+    "For EACH entity, use its name AND its associated facts to decide the best "
+    "type from: person, server, device, domain, service, project, repo, tool, "
+    "resource, company, system, user, package, account, file. "
+    "Judge by meaning, not by shape (a name that looks like a hostname may "
+    "really be a service; an IP is usually a resource; a model name like "
+    "deepseek-v4-flash is a tool/model; a channel like qqbot is a service). "
+    "If the facts clearly show what it is, trust the facts. "
+    "Return ONLY a JSON object mapping each exact entity name to a type, e.g. "
+    '{"host-a": "server", "app.example.com": "domain"}. '
+    "No explanation, no markdown."
+)
+
+
+def classify_entity_types_llm(
+    entities: list[tuple[str, str]], facts_map: dict[str, list[str]]
+) -> dict[str, str]:
+    """Batch-classify entity types via the configured LLM.
+
+    Args:
+        entities: list of (name, current_type) — current_type is context only.
+        facts_map: entity name -> short fact snippets (context for judgment).
+
+    Returns dict {name: suggested_type} — only names the LLM confidently
+    re-typed. On failure returns {} (caller keeps current types).
+    """
+    if not entities:
+        return {}
+    out: dict[str, str] = {}
+    # 分批（每批 25 个）——一次塞太多 LLM 会截断/超长，返回空
+    BATCH = 25
+    for i in range(0, len(entities), BATCH):
+        batch = entities[i : i + BATCH]
+        lines = []
+        for name, cur in batch:
+            ctx = ""
+            if name in facts_map and facts_map[name]:
+                ctx = " | facts: " + " ; ".join(facts_map[name][:3])
+            lines.append(f"- {name} (current: {cur or 'unknown'}){ctx}")
+        prompt = "Entities to classify:\n" + "\n".join(lines)
+        raw = _chat(prompt, _CLASSIFY_PROMPT)
+        if not raw:
+            continue
+        raw = raw.strip()
+        m = re.search(r"\{.*\}", raw, re.DOTALL)
+        if not m:
+            continue
+        try:
+            data = json.loads(m.group(0))
+            if isinstance(data, dict):
+                valid = {
+                    "person", "server", "device", "domain", "service", "project",
+                    "repo", "tool", "resource", "company", "system", "user",
+                    "package", "account", "file", "script", "format",
+                }
+                for k, v in data.items():
+                    if isinstance(v, str) and v.strip().lower() in valid:
+                        out[k] = v.strip().lower()
+        except Exception as e:
+            logger.debug("Seraph LLM classify parse failed: %s", e)
+    return out

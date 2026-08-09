@@ -422,6 +422,33 @@ class MemoryStore:
             self._conn.commit()
             return True
 
+    def update_entity_type(self, entity_id: int, entity_type: str) -> bool:
+        """Update an entity's type (e.g. 'unknown' -> 'resource').
+
+        Returns True if the row existed. Used to correct LLM extraction
+        mistakes (e.g. an IP entity typed 'unknown' should be 'resource').
+        """
+        valid_types = {
+            "person", "server", "device", "domain", "service", "project",
+            "repo", "tool", "resource", "company", "system", "user",
+            "package", "account", "file", "script", "format",
+        }
+        et = (entity_type or "").strip().lower()
+        if et not in valid_types:
+            raise ValueError(f"invalid entity_type '{entity_type}'; valid: {sorted(valid_types)}")
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT entity_id FROM entities WHERE entity_id = ?", (entity_id,)
+            ).fetchone()
+            if row is None:
+                return False
+            self._conn.execute(
+                "UPDATE entities SET entity_type = ? WHERE entity_id = ?",
+                (et, entity_id),
+            )
+            self._conn.commit()
+            return True
+
     def purge_orphan_entities(self, entity_type: str | None = None) -> int:
         """Delete entities with NO fact_entities and NO entity_relations links.
 

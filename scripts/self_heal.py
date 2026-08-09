@@ -27,6 +27,11 @@ import sys
 import time
 from pathlib import Path
 
+# 确保能从仓库根导入 llm_extract.py（脚本在 scripts/ 下运行）
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
 
 # ─────────────────────────────────────────────────────────────
 # 噪音判定（智能标准，非黑名单）
@@ -95,6 +100,7 @@ def check_db(db_path: str, report_only: bool, min_facts: int) -> dict:
         "noise_removed": [],
         "orphans_removed": [],
         "type_fixes": [],
+        "type_suggestions": [],
         "needs_review": [],
         "relations_check": {},
     }
@@ -156,6 +162,51 @@ def check_db(db_path: str, report_only: bool, min_facts: int) -> dict:
     """).fetchall()
     for r in ip_fix:
         report["type_fixes"].append({"id": r["entity_id"], "name": r["name"], "from": "unknown", "to": "resource"})
+
+    # ── 实体类型合理性检查（2026-08-09 asus 反馈：自迭代应检查类型是否合理）──
+    # 用 LLM 智能分类（不用规则/type_map——规则不能穷尽，会重蹈固定黑名单覆辙）
+    type_suggestion = []
+    # 收集需要检查的实体：unknown 类型（数量大时限制，避免每轮全库 LLM 调用）
+    check_rows = con.execute(
+        "SELECT entity_id, name, entity_type FROM entities "
+        "WHERE entity_type IN ('unknown', '') ORDER BY entity_id LIMIT 200"
+    ).fetchall()
+    if check_rows:
+        # 收集每个实体的关联事实作上下文
+        facts_map: dict[str, list[str]] = {}
+        for r in check_rows:
+            fs = con.execute(
+                """SELECT substr(f.content, 1, 120) as c FROM facts f
+                   JOIN fact_entities fe ON f.fact_id = fe.fact_id
+                   WHERE fe.entity_id = ? ORDER BY f.fact_id LIMIT 3""",
+                (r["entity_id"],),
+            ).fetchall()
+            facts_map[r["name"]] = [x["c"] for x in fs]
+        try:
+            from llm_extract import classify_entity_types_llm
+            suggested = classify_entity_types_llm(
+                [(r["name"], r["entity_type"]) for r in check_rows], facts_map
+            )
+        except Exception as e:
+            suggested = {}
+            report["relations_check"]["classify_error"] = str(e)
+        for r in check_rows:
+            new_type = suggested.get(r["name"])
+            if new_type and new_type != r["entity_type"]:
+                type_suggestion.append({
+                    "id": r["entity_id"], "name": r["name"],
+                    "from": r["entity_type"], "to": new_type,
+                })
+                report["type_suggestions"].append({
+                    "id": r["entity_id"], "name": r["name"],
+                    "from": r["entity_type"], "to": new_type,
+                })
+
+    # ── 执行类型修正（LLM 建议的类型自动应用；低风险）──
+    if not report_only:
+        for s in type_suggestion:
+            con.execute("UPDATE entities SET entity_type=? WHERE entity_id=?", (s["to"], s["id"]))
+            report["type_fixes"].append({"id": s["id"], "name": s["name"], "from": s["from"], "to": s["to"]})
 
     # ── 语义关联检查 ──
     # 孤立事实（无任何实体连接）
@@ -237,6 +288,9 @@ def main() -> int:
         print(f"  ... 等 {len(report['noise_removed'])} 个")
     print(f"孤立实体删除: {len(report['orphans_removed'])}")
     print(f"类型修正(IP→resource): {len(report['type_fixes'])}")
+    print(f"类型建议(unknown→domain/server等): {len(report['type_suggestions'])}")
+    for x in report["type_suggestions"][:8]:
+        print(f"  ~ {x['name']}: {x['from']} → {x['to']}")
     print(f"\n待人工审查: {len(report['needs_review'])}")
     for x in report["needs_review"][:10]:
         print(f"  ⚠ {x['name']} ({x['reason']}, fe={x['fe']}, er={x['er']})")
