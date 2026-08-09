@@ -83,6 +83,17 @@ FACT_STORE_SCHEMA = {
     },
 }
 
+# 记忆引擎强制规则——注入系统提示词，约束 Agent 的记忆操作方式（2026-08-09 用户要求）
+_MEMORY_RULES = (
+    "\n"
+    "MEMORY RULES (mandatory):\n"
+    "- ALL memory updates MUST go through the fact_store / fact_feedback tools. "
+    "Never modify memory_store.db (or any database) directly — databases are read-only to you. "
+    "You may read/inspect a database, but never write to it.\n"
+    "- Tools take priority over API endpoints: prefer fact_store / fact_feedback / memory tools "
+    "over any API call unless the user explicitly asks for the API."
+)
+
 FACT_FEEDBACK_SCHEMA = {
     "name": "fact_feedback",
     "description": (
@@ -203,14 +214,16 @@ class SeraphMemoryProvider(MemoryProvider):
                 "Active. Empty fact store — proactively add facts the user would expect you to remember.\n"
                 "Use fact_store(action='add') to store durable structured facts about people, projects, preferences, decisions. "
                 "Facts are processed with LLM entity/relation extraction (Chinese, hostnames, domains recognized).\n"
-                "Use fact_feedback to rate facts after using them (trains trust scores)."
+                "Use fact_feedback to rate facts after using them (trains trust scores).\n"
+                + _MEMORY_RULES
             )
         return (
             f"# Seraph Memory\n"
             f"Active. {total} facts stored with LLM entity resolution, relation extraction, and trust scoring.\n"
             f"Use fact_store to search, probe entities, reason across entities, or add facts "
             f"(new facts get LLM entity/relation extraction — Chinese, lowercase hostnames, domains all recognized).\n"
-            f"Use fact_feedback to rate facts after using them (trains trust scores)."
+            f"Use fact_feedback to rate facts after using them (trains trust scores).\n"
+            + _MEMORY_RULES
         )
 
     def prefetch(self, query: str, *, session_id: str = "") -> str:
