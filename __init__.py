@@ -18,8 +18,11 @@ Config in $HERMES_HOME/config.yaml (profile-scoped):
 from __future__ import annotations
 
 import json
+import os
+import sys
 import logging
 import re
+from pathlib import Path
 from typing import Any, Dict, List
 
 from agent.memory_provider import MemoryProvider
@@ -56,6 +59,7 @@ FACT_STORE_SCHEMA = {
         "• remove_entity — Delete an entity and its links (cascade).\n"
         "• update_entity_type — Fix an entity's type (e.g. 'unknown' -> 'resource'); pass entity_id + entity_type.\n"
         "• purge_orphans — Delete entities with no fact/relation links (LLM noise cleanup), optional entity_type filter.\n"
+        "• self_heal — Run the memory engine's autonomous health check (report-only): noise entities, orphan facts, type sanity, unknown ratio. Use it proactively to keep the knowledge graph clean.\n"
         "• update/remove/list — CRUD operations.\n\n"
         "IMPORTANT: Before answering questions about the user, ALWAYS probe or reason first."
     ),
@@ -64,7 +68,7 @@ FACT_STORE_SCHEMA = {
         "properties": {
             "action": {
                 "type": "string",
-                "enum": ["add", "search", "probe", "related", "reason", "contradict", "update", "remove", "remove_entity", "update_entity_type", "purge_orphans", "list"],
+                "enum": ["add", "search", "probe", "related", "reason", "contradict", "update", "remove", "remove_entity", "update_entity_type", "purge_orphans", "self_heal", "list"],
             },
             "content": {"type": "string", "description": "Fact content (required for 'add')."},
             "title": {"type": "string", "description": "Optional short title (used as Trilium note title). Auto-generated if omitted."},
@@ -92,7 +96,11 @@ _MEMORY_RULES = (
     "Never modify memory_store.db (or any database) directly — databases are read-only to you. "
     "You may read/inspect a database, but never write to it.\n"
     "- Tools take priority over API endpoints: prefer fact_store / fact_feedback / memory tools "
-    "over any API call unless the user explicitly asks for the API."
+    "over any API call unless the user explicitly asks for the API.\n"
+    "- SELF-MAINTENANCE: the memory engine has an autonomous health check — run "
+    "fact_store(action='self_heal') proactively when you add several facts, notice "
+    "suspicious entities, or before answering questions about the knowledge graph. "
+    "It reports noise entities / orphan facts / type issues without modifying anything."
 )
 
 FACT_FEEDBACK_SCHEMA = {
@@ -400,6 +408,19 @@ class SeraphMemoryProvider(MemoryProvider):
                     entity_type=args.get("entity_type") or None
                 )
                 return json.dumps({"purged": count})
+
+            elif action == "self_heal":
+                # 记忆引擎自迭代健康检查（报告模式，不自动修改；agent 决定是否清理）
+                try:
+                    sys.path.insert(0, os.path.join(os.path.dirname(__file__), "scripts"))
+                    from self_heal import check_db as _self_heal_check
+                except Exception:
+                    # 仓库结构下 scripts/ 是兄弟目录
+                    sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "seraph-memory", "scripts"))
+                    from self_heal import check_db as _self_heal_check
+                db = str(getattr(store, "db_path", Path.home() / ".hermes" / "memory_store.db"))
+                report = _self_heal_check(db, report_only=True, min_facts=int(args.get("min_facts", 1)))
+                return json.dumps(report, ensure_ascii=False)
 
             elif action == "list":
                 facts = store.list_facts(
