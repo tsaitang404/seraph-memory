@@ -454,6 +454,9 @@ class MemoryStore:
 
         Optionally restrict to one entity_type (e.g. 'unknown'). Returns the
         number of entities deleted. Used for cleaning LLM-extraction noise.
+        IP-address entities are NEVER purged (user preference: IPs are valid
+        resources, even when currently unreferenced) — consistent with
+        self_heal's orphan logic.
         """
         with self._lock:
             params: list = []
@@ -471,6 +474,9 @@ class MemoryStore:
                     SELECT 1 FROM entity_relations er
                     WHERE er.source_entity = e.entity_id OR er.target_entity = e.entity_id
                 )
+                -- IP addresses are valid entities: never auto-purge
+                AND NOT (e.name GLOB '*.*.*.*'
+                         AND e.name NOT GLOB '*[a-zA-Z]*')
                 {type_clause}
                 """,
                 params,

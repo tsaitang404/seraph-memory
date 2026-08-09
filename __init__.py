@@ -410,7 +410,7 @@ class SeraphMemoryProvider(MemoryProvider):
                 return json.dumps({"purged": count})
 
             elif action == "self_heal":
-                # 记忆引擎自迭代健康检查（报告模式，不自动修改；agent 决定是否清理）
+                # 记忆引擎自迭代健康检查。默认 report-only；apply=true 才执行自动清理。
                 try:
                     sys.path.insert(0, os.path.join(os.path.dirname(__file__), "scripts"))
                     from self_heal import check_db as _self_heal_check
@@ -419,7 +419,10 @@ class SeraphMemoryProvider(MemoryProvider):
                     sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "seraph-memory", "scripts"))
                     from self_heal import check_db as _self_heal_check
                 db = str(getattr(store, "db_path", Path.home() / ".hermes" / "memory_store.db"))
-                report = _self_heal_check(db, report_only=True, min_facts=int(args.get("min_facts", 1)))
+                apply = str(args.get("apply", "")).lower() in ("1", "true", "yes", "on")
+                report = _self_heal_check(
+                    db, report_only=not apply, min_facts=int(args.get("min_facts", 1)), apply=apply
+                )
                 return json.dumps(report, ensure_ascii=False)
 
             elif action == "list":

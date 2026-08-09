@@ -89,8 +89,12 @@ def is_noise_entity(name: str, entity_type: str, fe_count: int, er_count: int) -
     return False, ""
 
 
-def check_db(db_path: str, report_only: bool, min_facts: int) -> dict:
-    """执行健康检查。返回报告 dict。"""
+def check_db(db_path: str, report_only: bool, min_facts: int, apply: bool = False) -> dict:
+    """执行健康检查。返回报告 dict。
+
+    apply=True 时执行自动清理（低风险噪音 + 孤立非 IP + LLM 类型修正）；
+    默认只报告不修改。
+    """
     con = sqlite3.connect(db_path)
     con.row_factory = sqlite3.Row
     report: dict = {
@@ -203,7 +207,7 @@ def check_db(db_path: str, report_only: bool, min_facts: int) -> dict:
                 })
 
     # ── 执行类型修正（LLM 建议的类型自动应用；低风险）──
-    if not report_only:
+    if apply:
         for s in type_suggestion:
             con.execute("UPDATE entities SET entity_type=? WHERE entity_id=?", (s["to"], s["id"]))
             report["type_fixes"].append({"id": s["id"], "name": s["name"], "from": s["from"], "to": s["to"]})
@@ -221,8 +225,8 @@ def check_db(db_path: str, report_only: bool, min_facts: int) -> dict:
     unknown_n = report["stats"]["types"].get("unknown", 0)
     report["relations_check"]["unknown_ratio"] = round(unknown_n / total, 4) if total else 0
 
-    # ── 执行清理（除非 report-only）──
-    if not report_only:
+    # ── 执行清理（apply=True 才执行）──
+    if apply:
         if to_delete:
             ph = ",".join("?" * len(to_delete))
             con.execute(f"DELETE FROM fact_entities WHERE entity_id IN ({ph})", to_delete)
@@ -256,7 +260,8 @@ def check_db(db_path: str, report_only: bool, min_facts: int) -> dict:
 def main() -> int:
     ap = argparse.ArgumentParser(description="Seraph 记忆引擎自主健康检查/自清理")
     ap.add_argument("--db", default=str(Path.home() / ".hermes" / "memory_store.db"))
-    ap.add_argument("--report-only", action="store_true", help="只报告不修改")
+    ap.add_argument("--report-only", action="store_true", help="只报告不修改（默认行为）")
+    ap.add_argument("--apply", action="store_true", help="执行自动清理（低风险噪音+孤立非IP+LLM类型修正）")
     ap.add_argument("--min-facts", type=int, default=1, help="引用数达到该值且名字可疑的实体转人工审查（默认 1）")
     ap.add_argument("--json", action="store_true", help="输出 JSON（便于 cron 脚本消费）")
     args = ap.parse_args()
@@ -265,7 +270,7 @@ def main() -> int:
         print(f"数据库不存在: {args.db}", file=sys.stderr)
         return 2
 
-    report = check_db(args.db, args.report_only, args.min_facts)
+    report = check_db(args.db, args.report_only, args.min_facts, apply=args.apply)
 
     if args.json:
         print(json.dumps(report, ensure_ascii=False, indent=2))
