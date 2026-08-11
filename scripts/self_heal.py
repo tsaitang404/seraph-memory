@@ -42,7 +42,17 @@ def is_noise_entity(name: str, entity_type: str, fe_count: int, er_count: int) -
 
     智能标准：可标识 / 稳定 / 非冗余 三原则 + 典型噪音模式启发式。
     低引用 + 命中噪音模式 → 噪音。有事实引用且语义合理 → 保留。
+
+    关键：**实体类型是"已审查确认"的信号**——LLM/人工把实体分类为
+    resource/file/tool/service 等明确类型（非 unknown），表示它是有价值节点，
+    即使名字是路径/数字形态也保留（如 /PikPak 是存储路径实体=resource、
+    ~shareTemplate 是 Trilium 属性文件=file、llama 模型=tool）。
+    只有 unknown 类型 + 命中噪音模式 才判噪音（unknown 说明没人确认过它）。
     """
+    # 0. 已有明确类型（非 unknown）→ 人工/LLM 确认过价值，保留
+    if entity_type not in ("unknown", "", None):
+        return False, "已有明确类型"
+
     # 1. IP 是有效实体（用户明确偏好）——除非是纯端口数字
     if re.fullmatch(r"\d{1,3}(\.\d{1,3}){3}(:\d+)?", name):
         return False, "IP 有效实体"
