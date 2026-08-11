@@ -82,11 +82,19 @@ def check_db(db_path: str, report_only: bool, min_facts: int, apply: bool = Fals
     }
 
     # ── 噪音实体检测（LLM 智能判断，结合名字+类型+关联事实）──
+    # 增量审查：只查 reviewed=0（未审查/变化过的），已确认的跳过
+    try:
+        con.execute("SELECT reviewed FROM entities LIMIT 1").fetchone()
+    except sqlite3.OperationalError:
+        con.execute("ALTER TABLE entities ADD COLUMN reviewed INTEGER DEFAULT 0")
+        con.commit()
+
     rows = con.execute("""
-        SELECT e.entity_id, e.name, e.entity_type,
+        SELECT e.entity_id, e.name, e.entity_type, e.reviewed,
             (SELECT COUNT(*) FROM fact_entities fe WHERE fe.entity_id = e.entity_id) as fe,
             (SELECT COUNT(*) FROM entity_relations er WHERE er.source_entity = e.entity_id OR er.target_entity = e.entity_id) as er
         FROM entities e
+        WHERE e.reviewed = 0
     """).fetchall()
 
     # 收集关联事实上下文（每个实体最多 3 条）
@@ -112,17 +120,31 @@ def check_db(db_path: str, report_only: bool, min_facts: int, apply: bool = Fals
         report["relations_check"]["noise_llm_error"] = str(e)
 
     to_delete: list[int] = []
+    keep_ids: list[int] = []       # LLM 判保留 → 标 reviewed=1（已审查确认）
+    review_ids: list[int] = []     # LLM 判噪音但有引用 → 标 reviewed=1（已审过，等人工）
     for r in rows:
-        is_noise = noise_map.get(r["name"], False)  # LLM 没判的默认保留
+        judged = r["name"] in noise_map
+        is_noise = noise_map.get(r["name"], False)
         reason = "LLM 判定噪音"
+        if judged and not is_noise:
+            keep_ids.append(r["entity_id"])  # 判保留 → 自动确认
+            continue
         if is_noise:
             if r["fe"] > 0 or r["er"] > 0:
-                # 有引用但 LLM 判噪音 → 人工审查（防误删）
+                # 有引用但 LLM 判噪音 → 人工审查（防误删；标 reviewed 避免每天重复报）
+                review_ids.append(r["entity_id"])
                 report["needs_review"].append({"id": r["entity_id"], "name": r["name"], "reason": reason, "fe": r["fe"], "er": r["er"]})
             else:
                 # 零引用纯噪音 → 自动删
                 to_delete.append(r["entity_id"])
                 report["noise_removed"].append({"id": r["entity_id"], "name": r["name"], "reason": reason, "fe": r["fe"], "er": r["er"]})
+
+    # 已审查的实体标记 reviewed=1（下次跳过）：判保留 + 待人工确认的都标
+    marked_ids = keep_ids + review_ids
+    if marked_ids:
+        marks = ",".join("?" * len(marked_ids))
+        con.execute(f"UPDATE entities SET reviewed = 1 WHERE entity_id IN ({marks})", marked_ids)
+        con.commit()
 
     # ── 孤立实体（零引用零关系）──
     orphan_ids = [

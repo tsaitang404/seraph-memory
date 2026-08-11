@@ -200,6 +200,10 @@ class MemoryStore:
         ecols = {row[1] for row in self._conn.execute("PRAGMA table_info(entities)").fetchall()}
         if "description" not in ecols:
             self._conn.execute("ALTER TABLE entities ADD COLUMN description TEXT DEFAULT ''")
+        # Migrate: add reviewed column to entities (self_heal incremental review)
+        # reviewed=1 → 已审查确认，self_heal 跳过；实体关联变化 → _touch 清 0
+        if "reviewed" not in ecols:
+            self._conn.execute("ALTER TABLE entities ADD COLUMN reviewed INTEGER DEFAULT 0")
         self._conn.commit()
 
     # ------------------------------------------------------------------
@@ -364,9 +368,13 @@ class MemoryStore:
                 self._conn.execute(
                     "DELETE FROM fact_entities WHERE fact_id = ?", (fact_id,)
                 )
+                touched: list[int] = []
                 for name in self._extract_entities(content):
                     entity_id = self._resolve_entity(name)
                     self._link_fact_entity(fact_id, entity_id)
+                    touched.append(entity_id)
+                if touched:
+                    self._touch(touched)  # 内容变 → 关联实体重审
                 self._conn.commit()
 
             # Recompute HRR vector if content changed
@@ -389,10 +397,18 @@ class MemoryStore:
             if row is None:
                 return False
 
+            # 删除前收集关联实体 → 清 reviewed（引用变了需重审）
+            linked = [
+                r[0] for r in self._conn.execute(
+                    "SELECT entity_id FROM fact_entities WHERE fact_id = ?", (fact_id,)
+                )
+            ]
             self._conn.execute(
                 "DELETE FROM fact_entities WHERE fact_id = ?", (fact_id,)
             )
             self._conn.execute("DELETE FROM facts WHERE fact_id = ?", (fact_id,))
+            if linked:
+                self._touch(linked)
             self._conn.commit()
             self._rebuild_bank(row["category"])
             return True
@@ -446,6 +462,7 @@ class MemoryStore:
                 "UPDATE entities SET entity_type = ? WHERE entity_id = ?",
                 (et, entity_id),
             )
+            self._touch([entity_id])  # 类型变 → 清 reviewed 重审
             self._conn.commit()
             return True
 
@@ -639,11 +656,49 @@ class MemoryStore:
 
         return candidates
 
+    def _touch(self, entity_ids: list[int]) -> None:
+        """Clear 'reviewed' flag on entities (they changed → re-review needed).
+
+        Called on every write path that can change an entity's meaning:
+        linking a fact, adding relations, changing type. self_heal only
+        reviews entities with reviewed=0, so a touched entity gets re-judged
+        on the next run. Idempotent and cheap.
+        """
+        ids = [i for i in entity_ids if i]
+        if not ids:
+            return
+        marks = ",".join("?" * len(ids))
+        self._conn.execute(
+            f"UPDATE entities SET reviewed = 0 WHERE entity_id IN ({marks})",
+            ids,
+        )
+
+    def mark_reviewed(self, entity_id: int, reviewed: bool) -> bool:
+        """Set an entity's reviewed flag (1=已审查确认, 0=待审查).
+
+        Used after human/agent confirmation of a self_heal needs_review item,
+        or by self_heal itself when LLM judges an entity as keep.
+        Returns True if the row existed.
+        """
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT entity_id FROM entities WHERE entity_id = ?", (entity_id,)
+            ).fetchone()
+            if row is None:
+                return False
+            self._conn.execute(
+                "UPDATE entities SET reviewed = ? WHERE entity_id = ?",
+                (1 if reviewed else 0, entity_id),
+            )
+            self._conn.commit()
+            return True
+
     def _link_entities(self, fact_id: int, entities: list) -> None:
         """Resolve and link entities to a fact (idempotent).
 
         entities: list of str (name) or (name, type) tuples.
         """
+        touched: list[int] = []
         for item in entities:
             if isinstance(item, tuple) and len(item) >= 1:
                 name, etype = item[0], (item[1] if len(item) > 1 else "")
@@ -651,6 +706,10 @@ class MemoryStore:
                 name, etype = item, ""
             entity_id = self._resolve_entity(name, etype)
             self._link_fact_entity(fact_id, entity_id)
+            touched.append(entity_id)
+        if touched:
+            self._touch(touched)
+            self._conn.commit()
 
     def add_relations(self, triplets: list[tuple[str, str, str]], fact_id: int = 0) -> int:
         """Store (source, relation, target) triplets, resolving entity ids.
@@ -658,6 +717,7 @@ class MemoryStore:
         Returns the number of relations stored.
         """
         added = 0
+        touched: list[int] = []
         with self._lock:
             for source, relation, target in triplets:
                 src_id = self._resolve_entity(source)
@@ -672,6 +732,9 @@ class MemoryStore:
                 )
                 if cur.rowcount:
                     added += 1
+                    touched.extend([src_id, tgt_id])
+            if touched:
+                self._touch(touched)
             self._conn.commit()
         return added
 

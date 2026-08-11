@@ -58,6 +58,7 @@ FACT_STORE_SCHEMA = {
         "• contradict — Memory hygiene: find facts making conflicting claims.\n"
         "• remove_entity — Delete an entity and its links (cascade).\n"
         "• update_entity_type — Fix an entity's type (e.g. 'unknown' -> 'resource'); pass entity_id + entity_type.\n"
+        "• mark_reviewed — Mark an entity as reviewed/confirmed (entity_id + reviewed bool) after human/agent review of a self_heal item; reviewed=1 entities are skipped by future self_heal noise checks.\n"
         "• purge_orphans — Delete entities with no fact/relation links (LLM noise cleanup), optional entity_type filter.\n"
         "• self_heal — Run the memory engine's autonomous health check (report-only): noise entities, orphan facts, type sanity, unknown ratio. Use it proactively to keep the knowledge graph clean.\n"
         "• update/remove/list — CRUD operations.\n\n"
@@ -68,7 +69,7 @@ FACT_STORE_SCHEMA = {
         "properties": {
             "action": {
                 "type": "string",
-                "enum": ["add", "search", "probe", "related", "reason", "contradict", "update", "remove", "remove_entity", "update_entity_type", "purge_orphans", "self_heal", "list"],
+                "enum": ["add", "search", "probe", "related", "reason", "contradict", "update", "remove", "remove_entity", "update_entity_type", "mark_reviewed", "purge_orphans", "self_heal", "list"],
             },
             "content": {"type": "string", "description": "Fact content (required for 'add')."},
             "title": {"type": "string", "description": "Optional short title (used as Trilium note title). Auto-generated if omitted."},
@@ -76,8 +77,9 @@ FACT_STORE_SCHEMA = {
             "entity": {"type": "string", "description": "Entity name for 'probe'/'related'."},
             "entities": {"type": "array", "items": {"type": "string"}, "description": "Entity names for 'reason'."},
             "fact_id": {"type": "integer", "description": "Fact ID for 'update'/'remove'."},
-            "entity_id": {"type": "integer", "description": "Entity ID for 'remove_entity'."},
+            "entity_id": {"type": "integer", "description": "Entity ID for 'remove_entity'/'mark_reviewed'."},
             "entity_type": {"type": "string", "description": "Optional type filter for 'purge_orphans' (e.g. 'unknown')."},
+            "reviewed": {"type": "boolean", "description": "Reviewed flag for 'mark_reviewed' (true=确认保留/已审查, false=待审查)."},
             "category": {"type": "string", "enum": ["user_pref", "project", "tool", "general"]},
             "tags": {"type": "string", "description": "Comma-separated tags."},
             "trust_delta": {"type": "number", "description": "Trust adjustment for 'update'."},
@@ -402,6 +404,12 @@ class SeraphMemoryProvider(MemoryProvider):
                     int(args["entity_id"]), args.get("entity_type", "")
                 )
                 return json.dumps({"updated": ok})
+
+            elif action == "mark_reviewed":
+                ok = store.mark_reviewed(
+                    int(args["entity_id"]), bool(args.get("reviewed", True))
+                )
+                return json.dumps({"marked": ok})
 
             elif action == "purge_orphans":
                 count = store.purge_orphan_entities(
