@@ -267,6 +267,73 @@ def _chat(text: str, system_prompt: str) -> str:
         return ""
 
 
+_NOISE_PROMPT = (
+    "You decide whether each entity in a knowledge graph is noise (not worth a node). "
+    "For EACH entity, judge by MEANING using its name, its current type, AND its "
+    "associated facts. Keep it if it names a specific, stable, referenceable thing "
+    "(a host, service, domain, storage path that is a real mount, a model, a project). "
+    "Flag as noise if it is just a transient detail, a generic role label, a raw "
+    "port/number, a file name that is not a durable resource, a package version string, "
+    "or a vague category. IMPORTANT: shape alone is not decisive — '/PikPak' is a real "
+    "storage mount (keep), '~/.ssh/silk' is a config detail (noise), '8080' alone is "
+    "noise, 'deepseek-v4-flash' is a model (keep). Trust the facts when they show real "
+    "usage. Return ONLY a JSON object mapping each exact entity name to "
+    '{"keep": true} or {"noise": true, "reason": "..."}, e.g. '
+    '{"host-a": {"keep": true}, "8080": {"noise": true, "reason": "raw port"}}. '
+    "No explanation outside the JSON, no markdown."
+)
+
+
+def classify_noise_llm(
+    entities: list[tuple[str, str, int, int]], facts_map: dict[str, list[str]]
+) -> dict[str, bool]:
+    """Batch-classify whether entities are noise via the configured LLM.
+
+    Args:
+        entities: list of (name, entity_type, fe_count, er_count) — fe/er context only.
+        facts_map: entity name -> short fact snippets (context for judgment).
+
+    Returns dict {name: is_noise_bool} for names the LLM judged. On failure
+    returns {} (caller falls back to keeping everything, never auto-delete
+    without LLM confirmation — matches the 'no fixed rules' principle).
+    """
+    if not entities:
+        return {}
+    out: dict[str, bool] = {}
+    # 分批（每批 25 个）——一次塞太多 LLM 会截断/超长，返回空
+    BATCH = 25
+    for i in range(0, len(entities), BATCH):
+        batch = entities[i : i + BATCH]
+        lines = []
+        for name, cur, fe, er in batch:
+            ctx = ""
+            if name in facts_map and facts_map[name]:
+                ctx = " | facts: " + " ; ".join(facts_map[name][:3])
+            lines.append(
+                f"- {name} (type: {cur or 'unknown'}, refs: {fe}){ctx}"
+            )
+        prompt = "Entities to judge:\n" + "\n".join(lines)
+        raw = _chat(prompt, _NOISE_PROMPT)
+        if not raw:
+            continue
+        raw = raw.strip()
+        m = re.search(r"\{.*\}", raw, re.DOTALL)
+        if not m:
+            continue
+        try:
+            data = json.loads(m.group(0))
+            if isinstance(data, dict):
+                for k, v in data.items():
+                    if isinstance(v, dict):
+                        if v.get("noise"):
+                            out[k.strip()] = True
+                        elif v.get("keep"):
+                            out[k.strip()] = False
+        except Exception as e:
+            logger.debug("Seraph LLM noise parse failed: %s", e)
+    return out
+
+
 _CLASSIFY_PROMPT = (
     "You classify entities by their semantic role in a knowledge graph. "
     "For EACH entity, use its name AND its associated facts to decide the best "

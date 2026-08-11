@@ -34,68 +34,19 @@ if str(_REPO_ROOT) not in sys.path:
 
 
 # ─────────────────────────────────────────────────────────────
-# 噪音判定（智能标准，非黑名单）
+# 噪音判定（LLM 智能判断，非正则/非黑名单）
 # ─────────────────────────────────────────────────────────────
+# 原则（2026-08-11 用户纠正）：判断噪音不能用正则——正则永远不会完善，
+# 永远有规则外的东西漏进去。必须结合名字 + 类型 + 关联事实内容智能判断。
+# LLM 判断失败的实体一律保留（宁可不删，不可误删）。
+
 
 def is_noise_entity(name: str, entity_type: str, fe_count: int, er_count: int) -> tuple[bool, str]:
     """判断实体是否噪音。返回 (是否噪音, 原因)。
 
-    智能标准：可标识 / 稳定 / 非冗余 三原则 + 典型噪音模式启发式。
-    低引用 + 命中噪音模式 → 噪音。有事实引用且语义合理 → 保留。
-
-    关键：**实体类型是"已审查确认"的信号**——LLM/人工把实体分类为
-    resource/file/tool/service 等明确类型（非 unknown），表示它是有价值节点，
-    即使名字是路径/数字形态也保留（如 /PikPak 是存储路径实体=resource、
-    ~shareTemplate 是 Trilium 属性文件=file、llama 模型=tool）。
-    只有 unknown 类型 + 命中噪音模式 才判噪音（unknown 说明没人确认过它）。
+    已废弃正则路径判定，改用 classify_noise_llm 批量智能判断。
+    此函数保留仅为兼容签名；主流程不再调用。
     """
-    # 0. 已有明确类型（非 unknown）→ 人工/LLM 确认过价值，保留
-    if entity_type not in ("unknown", "", None):
-        return False, "已有明确类型"
-
-    # 1. IP 是有效实体（用户明确偏好）——除非是纯端口数字
-    if re.fullmatch(r"\d{1,3}(\.\d{1,3}){3}(:\d+)?", name):
-        return False, "IP 有效实体"
-    if re.fullmatch(r"\d+", name):  # 纯端口/数字
-        return True, "纯数字/端口"
-
-    # 2. 路径类（~/xxx、/xxx/xxx）
-    if name.startswith("~") or name.startswith("/") or "/" in name and re.search(r"\.\w+$", name):
-        return True, "文件/路径"
-
-    # 3. transient 组件实例（name(instance) 括号后缀）
-    if "(" in name and ")" in name:
-        return True, "组件实例"
-
-    # 4. 角色标签/泛词（常见中文泛词）
-    generic_zh = {
-        "系统", "集群", "子域名", "数据目录", "集群机器", "集群角色表",
-        "root 全权限", "只读", "邮箱注册", "安装包", "多租户扩展机",
-        "扩展机", "堡垒机", "环境", "数据库", "中间件", "服务", "主机",
-        "机器", "服务器", "目录", "文件", "配置", "用户", "账号", "密钥",
-    }
-    if name in generic_zh:
-        return True, "泛词/角色标签"
-
-    # 5. 英文泛词
-    generic_en = {
-        "system", "cluster", "subdomain", "user", "host", "machine",
-        "server", "service", "config", "file", "data", "database",
-        "key", "password", "token", "api_key", "curl", "aur", "root",
-        "admin", "public_key", "private_key", "local_router_dns",
-        "vpn_dns", "blueking_cluster", "system",
-    }
-    if name.lower() in generic_en:
-        return True, "英文泛词"
-
-    # 6. 版本/包名（install_ee-V4.0.0、xxx-4.0.0 安装包）
-    if re.search(r"[vV]?\d+\.\d+", name) and any(k in name for k in ("install", "安装包", "-")):
-        return True, "安装包/版本"
-
-    # 7. 未知类型 + 零引用 → 高风险孤立（报告但默认不自动删）
-    if entity_type in ("unknown", "") and fe_count == 0 and er_count == 0:
-        return True, "unknown 零引用孤立"
-
     return False, ""
 
 
@@ -130,7 +81,7 @@ def check_db(db_path: str, report_only: bool, min_facts: int, apply: bool = Fals
         )
     }
 
-    # ── 噪音实体检测 ──
+    # ── 噪音实体检测（LLM 智能判断，结合名字+类型+关联事实）──
     rows = con.execute("""
         SELECT e.entity_id, e.name, e.entity_type,
             (SELECT COUNT(*) FROM fact_entities fe WHERE fe.entity_id = e.entity_id) as fe,
@@ -138,17 +89,38 @@ def check_db(db_path: str, report_only: bool, min_facts: int, apply: bool = Fals
         FROM entities e
     """).fetchall()
 
+    # 收集关联事实上下文（每个实体最多 3 条）
+    facts_map: dict[str, list[str]] = {}
+    for r in rows:
+        fs = con.execute(
+            """SELECT substr(f.content, 1, 120) as c FROM facts f
+               JOIN fact_entities fe ON f.fact_id = fe.fact_id
+               WHERE fe.entity_id = ? ORDER BY f.fact_id LIMIT 3""",
+            (r["entity_id"],),
+        ).fetchall()
+        facts_map[r["name"]] = [x["c"] for x in fs]
+
+    # LLM 批量噪音判定（分批，失败返回 {} → 全部保留）
+    noise_map: dict[str, bool] = {}
+    try:
+        from llm_extract import classify_noise_llm
+        noise_map = classify_noise_llm(
+            [(r["name"], r["entity_type"], r["fe"], r["er"]) for r in rows],
+            facts_map,
+        )
+    except Exception as e:
+        report["relations_check"]["noise_llm_error"] = str(e)
+
     to_delete: list[int] = []
     for r in rows:
-        is_noise, reason = is_noise_entity(r["name"], r["entity_type"], r["fe"], r["er"])
+        is_noise = noise_map.get(r["name"], False)  # LLM 没判的默认保留
+        reason = "LLM 判定噪音"
         if is_noise:
-            if r["fe"] > 0 and reason in ("unknown 零引用孤立",):
-                # 有事实引用但名字可疑 → 人工审查
-                report["needs_review"].append({"id": r["entity_id"], "name": r["name"], "reason": reason, "fe": r["fe"], "er": r["er"]})
-            elif r["fe"] >= min_facts and reason != "unknown 零引用孤立":
-                # 有较多引用但名字可疑 → 人工审查（防误删）
+            if r["fe"] > 0 or r["er"] > 0:
+                # 有引用但 LLM 判噪音 → 人工审查（防误删）
                 report["needs_review"].append({"id": r["entity_id"], "name": r["name"], "reason": reason, "fe": r["fe"], "er": r["er"]})
             else:
+                # 零引用纯噪音 → 自动删
                 to_delete.append(r["entity_id"])
                 report["noise_removed"].append({"id": r["entity_id"], "name": r["name"], "reason": reason, "fe": r["fe"], "er": r["er"]})
 
