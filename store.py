@@ -699,17 +699,26 @@ class MemoryStore:
         entities: list of str (name) or (name, type) tuples.
         """
         touched: list[int] = []
+        fresh: list[int] = []  # entities created by this call (need description)
         for item in entities:
             if isinstance(item, tuple) and len(item) >= 1:
                 name, etype = item[0], (item[1] if len(item) > 1 else "")
             else:
                 name, etype = item, ""
+            exists = self._conn.execute(
+                "SELECT entity_id FROM entities WHERE name LIKE ?", (name,)
+            ).fetchone()
             entity_id = self._resolve_entity(name, etype)
             self._link_fact_entity(fact_id, entity_id)
             touched.append(entity_id)
+            if exists is None:
+                fresh.append(entity_id)
         if touched:
             self._touch(touched)
             self._conn.commit()
+        # 自动画像：仅对本次新建的实体生成描述（存量空描述实体由 batch_describe 统一补）
+        if fresh:
+            self.ensure_entity_descriptions(fresh)
 
     def add_relations(self, triplets: list[tuple[str, str, str]], fact_id: int = 0) -> int:
         """Store (source, relation, target) triplets, resolving entity ids.
@@ -718,8 +727,15 @@ class MemoryStore:
         """
         added = 0
         touched: list[int] = []
+        fresh: list[int] = []  # entities created by this call (need description)
         with self._lock:
             for source, relation, target in triplets:
+                src_exists = self._conn.execute(
+                    "SELECT entity_id FROM entities WHERE name LIKE ?", (source,)
+                ).fetchone()
+                tgt_exists = self._conn.execute(
+                    "SELECT entity_id FROM entities WHERE name LIKE ?", (target,)
+                ).fetchone()
                 src_id = self._resolve_entity(source)
                 tgt_id = self._resolve_entity(target)
                 cur = self._conn.execute(
@@ -733,9 +749,16 @@ class MemoryStore:
                 if cur.rowcount:
                     added += 1
                     touched.extend([src_id, tgt_id])
+                if src_exists is None:
+                    fresh.append(src_id)
+                if tgt_exists is None:
+                    fresh.append(tgt_id)
             if touched:
                 self._touch(touched)
             self._conn.commit()
+        # 自动画像：仅对本次新建的实体生成描述
+        if fresh:
+            self.ensure_entity_descriptions(list(dict.fromkeys(fresh)))
         return added
 
     def update_entity_description(self, entity_id: int, description: str) -> None:
@@ -746,6 +769,49 @@ class MemoryStore:
                 (description, entity_id),
             )
             self._conn.commit()
+
+    def ensure_entity_descriptions(self, entity_ids: list[int]) -> None:
+        """Generate LLM descriptions for entities that currently have none.
+
+        Called after linking entities/relations so newly-created entities
+        automatically get a profile. Skips entities that already have a
+        description or that have no facts/relations to aggregate. Any LLM
+        failure is silently ignored (existing description is kept).
+        """
+        if not entity_ids:
+            return
+        try:
+            from .llm_extract import generate_entity_description
+        except Exception:
+            try:
+                from llm_extract import generate_entity_description
+            except Exception:
+                return
+        with self._lock:
+            for eid in entity_ids:
+                row = self._conn.execute(
+                    "SELECT name, description FROM entities WHERE entity_id=?",
+                    (eid,),
+                ).fetchone()
+                if not row:
+                    continue
+                name, desc = row["name"], row["description"] or ""
+                if desc.strip():
+                    continue
+                facts = self.get_entity_facts(eid)
+                relations = self.get_entity_relations(eid)
+                if not facts and not relations:
+                    continue
+                try:
+                    new_desc = generate_entity_description(name, facts, relations)
+                except Exception:
+                    continue
+                if new_desc:
+                    self._conn.execute(
+                        "UPDATE entities SET description=? WHERE entity_id=?",
+                        (new_desc, eid),
+                    )
+                    self._conn.commit()
 
     def get_entity_facts(self, entity_id: int) -> list[str]:
         """Return all fact contents linked to an entity."""

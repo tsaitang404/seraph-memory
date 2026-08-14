@@ -68,13 +68,19 @@ _RELATION_PROMPT = (
 )
 
 _DESCRIPTION_PROMPT = (
-    "You write a concise structured description for ONE entity based on the "
+    "You write a structured description for ONE entity based on the "
     "facts and relations associated with it. "
-    "Output plain text (no markdown, no JSON), 3-8 lines, covering: "
-    "what it is (type/role), key attributes (IP, user, system, ports, URLs), "
-    "and its important connections. "
+    "Output EXACTLY 3 lines, each starting with one of the fixed labels: "
+    "[类型] [别名] [说明]. "
+    "Line 1 [类型]: the entity's type/role in Chinese (e.g. 服务器, 服务, "
+    "工具, 域名, 项目, 仓库, 设备, 系统, 资源, 公司, 人员). "
+    "Line 2 [别名]: key identifiers separated by ' · ' (IPs, hostnames, "
+    "domains, ports, usernames, URLs). If none are known, write '-'. "
+    "Line 3 [说明]: one concise sentence describing what it is and its "
+    "important connections. Only state what the facts support — do not "
+    "invent details. "
     "Use the entity's own language (Chinese if the facts are Chinese). "
-    "Only state what the facts support — do not invent details."
+    "No markdown, no JSON, no extra lines."
 )
 
 
@@ -214,7 +220,7 @@ def generate_entity_description(entity: str, facts: list[str], relations: list[t
 
     Returns "" on any failure (caller keeps existing description).
     """
-    if not facts:
+    if not facts and not relations:
         return ""
     facts_text = "\n".join(f"- {f[:150]}" for f in facts[:12])
     rel_text = "\n".join(f"- {s} {r} {t}" for s, r, t in relations[:12])
