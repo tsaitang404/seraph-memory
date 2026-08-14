@@ -43,15 +43,19 @@ done = 0
 skipped = 0
 failed = 0
 
+force = "--force" in sys.argv
+
 for entity_id, name in entities:
-    # 已有描述则跳过
+    # 已有描述则跳过（--force 时重生成，用于旧格式画像升级到三行模板）
     row = cur.execute(
         "SELECT description FROM entities WHERE entity_id=? AND description != ''",
         (entity_id,),
     ).fetchone()
-    if row:
+    if row and not force:
         skipped += 1
         continue
+    if row and force:
+        print(f"  ↻ 重生成 {name}（旧格式 → 三行模板）")
 
     # 收集关联事实
     facts = [
