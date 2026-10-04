@@ -25,7 +25,7 @@ if os.path.exists(env_file):
                 k, v = line.split("=", 1)
                 os.environ.setdefault(k.strip(), v.strip())
 
-sys.path.insert(0, "/data/code/seraph-memory")
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from llm_extract import generate_entity_description
 
 conn = sqlite3.connect(MEMORY_DB)

@@ -22,7 +22,7 @@ if os.path.exists(env_file):
                 k, v = line.split("=", 1)
                 os.environ.setdefault(k.strip(), v.strip())
 
-sys.path.insert(0, "/data/code/seraph-memory")
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from llm_extract import extract_entities_llm, extract_relations_llm
 from store import MemoryStore
 

@@ -14,7 +14,7 @@
     python3 self_heal.py --min-facts N   # 保留引用数 >= N 的实体（默认 1）
 
 cron 建议（每日）:
-    0 3 * * *  /opt/hermes-agent/venv/bin/python3 /data/code/seraph-memory/scripts/self_heal.py
+    0 3 * * *  ~/.hermes/scripts/self_heal_cron.sh   # 实际部署（含 PYTHONPATH 注入）
 """
 from __future__ import annotations
 
