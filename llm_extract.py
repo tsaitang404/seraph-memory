@@ -101,6 +101,26 @@ def _resolve_endpoint() -> tuple[str, str, str]:
         if not model or not provider:
             return "", "", ""
 
+        # Custom providers (config `custom_providers`, referenced as
+        # custom:<name>) are NOT registered in hermes_cli.providers —
+        # get_provider() returns None for them, which silently sent every
+        # extraction to the deepseek fallback (and 402 once that balance ran
+        # out). Resolve them directly from config instead.
+        if provider.startswith("custom:"):
+            name = provider.split(":", 1)[1]
+            for cp in cfg_get(all_config, "custom_providers", default=[]) or []:
+                if not isinstance(cp, dict) or cp.get("name") != name:
+                    continue
+                cp_base = cp.get("base_url", "") or ""
+                key_env = cp.get("api_key_env", "") or ""
+                cp_key = ""
+                if key_env:
+                    cp_key = os.environ.get(key_env, "") or _read_env_file(key_env)
+                if cp_base and cp_key:
+                    return cp_base, cp_key, model
+                break  # provider found but incomplete → don't scan others
+            return _fallback_deepseek()
+
         # Get provider def (base_url_env_var + api key env var)
         pdef = get_provider(provider)
         base_url_env = pdef.base_url_env_var if pdef else ""
@@ -253,7 +273,11 @@ def _chat(text: str, system_prompt: str) -> str:
             {"role": "user", "content": f"Extract from: {text}"},
         ],
         "temperature": 0.1,
-        "max_tokens": 300,
+        # mimo is a reasoning model: its reasoning tokens are drawn from this
+        # budget, so a 300 cap lets finish_reason=length return an EMPTY
+        # content and every extraction silently yields []. 1500 gives headroom
+        # (measured: 5/5 finish=stop vs 300 giving 'length').
+        "max_tokens": 1500,
     }
     req = urllib.request.Request(
         url,
