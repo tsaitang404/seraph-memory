@@ -7,6 +7,7 @@ Jaccard similarity reranking and trust-weighted scoring.
 from __future__ import annotations
 
 import math
+import re
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
@@ -62,9 +63,20 @@ class FactRetriever:
 
         Returns list of dicts with fact data + 'score' field, sorted by score desc.
         """
+        if limit <= 0 or not query.strip():
+            return []
+
         # Stage 1: Get FTS5 candidates (more than limit for reranking headroom)
         candidates = self._fts_candidates(query, category, min_trust, limit * 3)
 
+        # Existing unicode61 indexes do not split Chinese or mixed-script words.
+        # Supplement them without a schema migration; keep filters and a bounded
+        # candidate set, ordered by the number of matching query terms.
+        if re.search(r"[\u3400-\u9fff]", query):
+            seen = {f["fact_id"] for f in candidates}
+            candidates.extend(f for f in self._substring_candidates(
+                query, category, min_trust, limit * 3
+            ) if f["fact_id"] not in seen)
         if not candidates:
             return []
 
@@ -559,20 +571,49 @@ class FactRetriever:
 
         return results
 
+    def _substring_candidates(self, query, category, min_trust, limit):
+        terms = sorted(self._tokenize(query) - self._FTS_STOPWORDS)[:32]
+        if not terms:
+            return []
+        # instr treats %, _ and backslashes literally (unlike LIKE).
+        hit_sql = " + ".join(
+            "(instr(lower(content || ' ' || tags), ?) > 0)" for _ in terms
+        )
+        filters = ["trust_score >= ?"]
+        params = terms + [min_trust]
+        if category:
+            filters.append("category = ?")
+            params.append(category)
+        # Mixed-script questions name a concrete Latin identifier: do not let
+        # generic Chinese words such as 配置 drown out that explicit subject.
+        anchors = [term for term in terms if re.fullmatch(r"[a-z0-9_]+", term)]
+        if anchors:
+            filters.append("(" + " OR ".join(
+                "instr(lower(content || ' ' || tags), ?) > 0" for _ in anchors
+            ) + ")")
+            params.extend(anchors)
+        rows = self.store._conn.execute(
+            "SELECT * FROM (SELECT facts.*, (" + hit_sql + ") AS term_hits "
+            "FROM facts WHERE " + " AND ".join(filters) + ") "
+            "WHERE term_hits > 0 ORDER BY term_hits DESC, fact_id DESC LIMIT ?",
+            params + [limit],
+        ).fetchall()
+        return [dict(row, fts_rank=row["term_hits"] / len(terms)) for row in rows]
+
     @staticmethod
     def _tokenize(text: str) -> set[str]:
-        """Simple whitespace tokenization with lowercasing.
+        """Latin identifiers and overlapping CJK bigrams, shared by reranking.
 
-        Strips common punctuation. No stemming/lemmatization (Phase 1).
+        Bigrams support Chinese substring recall without requiring a segmenter
+        or rewriting existing FTS indexes. Single CJK characters are omitted
+        to avoid flooding candidates with common grammatical particles.
         """
-        if not text:
-            return set()
-        # Split on whitespace, lowercase, strip punctuation
         tokens = set()
-        for word in text.lower().split():
-            cleaned = word.strip(".,;:!?\"'()[]{}#@<>")
-            if cleaned:
-                tokens.add(cleaned)
+        for word in re.findall(r"[a-z0-9_]+|[\u3400-\u9fff]+", text.lower()):
+            if re.search(r"[\u3400-\u9fff]", word):
+                tokens.update(word[i:i + 2] for i in range(len(word) - 1))
+            elif len(word) >= 2:
+                tokens.add(word)
         return tokens
 
     # Stopwords dropped before FTS5 OR-expansion. Short English function

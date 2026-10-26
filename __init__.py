@@ -389,6 +389,9 @@ class SeraphMemoryProvider(MemoryProvider):
                     tags=args.get("tags"),
                     category=args.get("category"),
                 )
+                if (updated and args.get("content") is not None
+                        and is_truthy_value(self._config.get("llm_extract", False))):
+                    self._llm_extract_and_link(int(args["fact_id"]), args["content"])
                 return json.dumps({"updated": updated})
 
             elif action == "remove":

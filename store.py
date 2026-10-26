@@ -334,7 +334,7 @@ class MemoryStore:
         """
         with self._lock:
             row = self._conn.execute(
-                "SELECT fact_id, trust_score FROM facts WHERE fact_id = ?", (fact_id,)
+                "SELECT fact_id, trust_score, category FROM facts WHERE fact_id = ?", (fact_id,)
             ).fetchone()
             if row is None:
                 return False
@@ -363,8 +363,17 @@ class MemoryStore:
             )
             self._conn.commit()
 
-            # If content changed, re-extract entities
+            # Invalidate relations derived from the previous text, including
+            # relation-only entities whose review state must also be reset.
             if content is not None:
+                old_entities = [r[0] for r in self._conn.execute(
+                    "SELECT entity_id FROM fact_entities WHERE fact_id = ? "
+                    "UNION SELECT source_entity FROM entity_relations WHERE fact_id = ? "
+                    "UNION SELECT target_entity FROM entity_relations WHERE fact_id = ?",
+                    (fact_id, fact_id, fact_id),
+                )]
+                self._touch(old_entities)
+                self._conn.execute("DELETE FROM entity_relations WHERE fact_id = ?", (fact_id,))
                 self._conn.execute(
                     "DELETE FROM fact_entities WHERE fact_id = ?", (fact_id,)
                 )
@@ -385,6 +394,8 @@ class MemoryStore:
                 "SELECT category FROM facts WHERE fact_id = ?", (fact_id,)
             ).fetchone()["category"]
             self._rebuild_bank(cat)
+            if row["category"] != cat:
+                self._rebuild_bank(row["category"])
 
             return True
 
@@ -406,6 +417,16 @@ class MemoryStore:
             self._conn.execute(
                 "DELETE FROM fact_entities WHERE fact_id = ?", (fact_id,)
             )
+            linked.extend(r[0] for r in self._conn.execute(
+                "SELECT source_entity FROM entity_relations WHERE fact_id = ? "
+                "UNION SELECT target_entity FROM entity_relations WHERE fact_id = ?",
+                (fact_id, fact_id),
+            ))
+            self._conn.execute("DELETE FROM entity_relations WHERE fact_id = ?", (fact_id,))
+            if self._conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE name = 'note_map'"
+            ).fetchone():
+                self._conn.execute("DELETE FROM note_map WHERE fact_id = ?", (fact_id,))
             self._conn.execute("DELETE FROM facts WHERE fact_id = ?", (fact_id,))
             if linked:
                 self._touch(linked)

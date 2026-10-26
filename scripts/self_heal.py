@@ -56,7 +56,8 @@ def check_db(db_path: str, report_only: bool, min_facts: int, apply: bool = Fals
     apply=True 时执行自动清理（低风险噪音 + 孤立非 IP + LLM 类型修正）；
     默认只报告不修改。
     """
-    con = sqlite3.connect(db_path)
+    apply = apply and not report_only
+    con = sqlite3.connect(db_path if apply else Path(db_path).resolve().as_uri() + "?mode=ro", uri=not apply)
     con.row_factory = sqlite3.Row
     report: dict = {
         "ts": time.strftime("%Y-%m-%d %H:%M:%S"),
@@ -86,15 +87,17 @@ def check_db(db_path: str, report_only: bool, min_facts: int, apply: bool = Fals
     try:
         con.execute("SELECT reviewed FROM entities LIMIT 1").fetchone()
     except sqlite3.OperationalError:
-        con.execute("ALTER TABLE entities ADD COLUMN reviewed INTEGER DEFAULT 0")
-        con.commit()
+        if apply:
+            con.execute("ALTER TABLE entities ADD COLUMN reviewed INTEGER DEFAULT 0")
+            con.commit()
+    has_reviewed = any(r[1] == "reviewed" for r in con.execute("PRAGMA table_info(entities)"))
 
-    rows = con.execute("""
-        SELECT e.entity_id, e.name, e.entity_type, e.reviewed,
+    rows = con.execute(f"""
+        SELECT e.entity_id, e.name, e.entity_type, {"e.reviewed" if has_reviewed else "0"} AS reviewed,
             (SELECT COUNT(*) FROM fact_entities fe WHERE fe.entity_id = e.entity_id) as fe,
             (SELECT COUNT(*) FROM entity_relations er WHERE er.source_entity = e.entity_id OR er.target_entity = e.entity_id) as er
         FROM entities e
-        WHERE e.reviewed = 0
+        WHERE {"e.reviewed = 0" if has_reviewed else "1 = 1"}
     """).fetchall()
 
     # 收集关联事实上下文（每个实体最多 3 条）
@@ -121,7 +124,7 @@ def check_db(db_path: str, report_only: bool, min_facts: int, apply: bool = Fals
 
     to_delete: list[int] = []
     keep_ids: list[int] = []       # LLM 判保留 → 标 reviewed=1（已审查确认）
-    review_ids: list[int] = []     # LLM 判噪音但有引用 → 标 reviewed=1（已审过，等人工）
+    review_ids: list[int] = []     # 有引用的疑似噪音保留为待审查
     for r in rows:
         judged = r["name"] in noise_map
         is_noise = noise_map.get(r["name"], False)
@@ -131,7 +134,7 @@ def check_db(db_path: str, report_only: bool, min_facts: int, apply: bool = Fals
             continue
         if is_noise:
             if r["fe"] > 0 or r["er"] > 0:
-                # 有引用但 LLM 判噪音 → 人工审查（防误删；标 reviewed 避免每天重复报）
+                # 有引用但 LLM 判噪音 → 人工审查（防误删，等待人工确认）
                 review_ids.append(r["entity_id"])
                 report["needs_review"].append({"id": r["entity_id"], "name": r["name"], "reason": reason, "fe": r["fe"], "er": r["er"]})
             else:
@@ -139,9 +142,10 @@ def check_db(db_path: str, report_only: bool, min_facts: int, apply: bool = Fals
                 to_delete.append(r["entity_id"])
                 report["noise_removed"].append({"id": r["entity_id"], "name": r["name"], "reason": reason, "fe": r["fe"], "er": r["er"]})
 
-    # 已审查的实体标记 reviewed=1（下次跳过）：判保留 + 待人工确认的都标
-    marked_ids = keep_ids + review_ids
-    if marked_ids:
+    # 仅 apply 模式下把确认保留的实体标记为已审查
+    # Pending human review must remain visible on subsequent reports.
+    marked_ids = keep_ids
+    if apply and marked_ids:
         marks = ",".join("?" * len(marked_ids))
         con.execute(f"UPDATE entities SET reviewed = 1 WHERE entity_id IN ({marks})", marked_ids)
         con.commit()
