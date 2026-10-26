@@ -41,6 +41,15 @@ class Regressions(unittest.TestCase):
         self.store.close()
         self.temp.cleanup()
 
+    def test_maintenance_scripts_have_no_import_side_effects(self):
+        for name in ['backfill', 'batch_describe', 'refresh_descriptions']:
+            with self.subTest(script=name):
+                spec = importlib.util.spec_from_file_location('import_check_' + name, ROOT / (name + '.py'))
+                module = importlib.util.module_from_spec(spec)
+                with patch('sqlite3.connect', side_effect=AssertionError('import opened database')):
+                    spec.loader.exec_module(module)
+                self.assertTrue(callable(module.main))
+
     def test_mixed_script_and_chinese_recall(self):
         fixtures = [('soul 使用 NixOS 配置', 'soul的配置'),
                     ('Cloudflare 的认证通过服务令牌', 'Cloudflare的配置'),
